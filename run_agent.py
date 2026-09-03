@@ -569,6 +569,7 @@ class AIAgent:
         pass_session_id: bool = False,
         requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None,
+        reasoning_backend: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         if tool_delay is not None:
@@ -586,6 +587,7 @@ class AIAgent:
             provider=provider,
             requested_provider=requested_provider,
             capabilities=capabilities,
+            reasoning_backend=reasoning_backend,
             api_mode=api_mode,
             acp_command=acp_command,
             acp_args=acp_args,
@@ -9292,6 +9294,7 @@ class AIAgent:
         )
         from agent import relay_runtime
         from agent.conversation_loop import run_conversation
+        from agent.reasoning_backend import get_reasoning_backend
         from agent.portal_tags import (
             reset_affinity_scope,
             reset_conversation_context,
@@ -9814,8 +9817,11 @@ class AIAgent:
                             durable_turn_timer_handles.append(
                                 durable_turn_liveness_watchdog.schedule()
                             )
-                    result = run_conversation(
+                    result = get_reasoning_backend(
+                        getattr(self, "reasoning_backend", None)
+                    ).run(
                         self,
+                        run_conversation,
                         user_message,
                         system_message,
                         conversation_history,

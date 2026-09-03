@@ -3423,6 +3423,12 @@ def switch_model(
     # Publish the destination capability map only after every runtime setup
     # above has succeeded. Failed switches must leave the old map intact.
     agent.runtime_capabilities = destination_capabilities
+    try:
+        from agent.reasoning_backend import resolve_provider_capabilities
+
+        agent.reasoning_capabilities = resolve_provider_capabilities(agent).to_dict()
+    except Exception:
+        logger.debug("switch_model: reasoning capabilities refresh failed", exc_info=True)
 
     # ── Reset the cross-turn stale-call circuit breaker (#58962) ──
     # The breaker's error text tells the user to "switch models ... then

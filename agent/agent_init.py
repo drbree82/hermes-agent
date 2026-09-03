@@ -614,6 +614,7 @@ def init_agent(
     pass_session_id: bool = False,
     requested_provider: str = None,
     capabilities: Optional[Dict[str, bool]] = None,
+    reasoning_backend: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -2914,6 +2915,34 @@ def init_agent(
         provider=agent.provider,
         is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
     )
+    # Keep backend selection available to every frontend that constructs an
+    # AIAgent directly (gateway, cron, one-shot, delegation).  The CLI may
+    # pass an explicit override; otherwise the shared config is authoritative.
+    if reasoning_backend is None:
+        reasoning_backend = os.getenv("HERMES_REASONING_BACKEND")
+    if reasoning_backend is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            reasoning_backend = load_config_readonly().get("reasoning_backend")
+        except Exception:
+            reasoning_backend = None
+    from agent.reasoning_backend import (
+        get_reasoning_backend,
+        resolve_provider_capabilities,
+    )
+
+    selected_backend = (reasoning_backend or "legacy").strip().lower()
+    # Resolve/validate once at initialization so a typo cannot fail after a
+    # user turn has already started acquiring leases or running tools.
+    get_reasoning_backend(selected_backend)
+    agent.reasoning_backend = selected_backend
+    agent.reasoning_capabilities = resolve_provider_capabilities(agent).to_dict()
+    # Keep the selected substrate visible in the durable session metadata. The
+    # transcript/checkpoint remains the source of truth for actual state; this
+    # field makes resumed-session analysis and A/B reports explainable.
+    if isinstance(getattr(agent, "_session_init_model_config", None), dict):
+        agent._session_init_model_config["reasoning_backend"] = selected_backend
     agent.max_compression_attempts = compression_max_attempts
     agent.compression_idle_compact_after_seconds = (
         compression_idle_compact_after_seconds

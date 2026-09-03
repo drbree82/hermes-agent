@@ -1,4 +1,4 @@
-"""Native OpenAI Responses server-side compaction — gpt-5.6 on direct OpenAI routes only.
+"""Native OpenAI Responses server-side compaction on supported OpenAI routes.
 
 OpenAI's Responses API supports server-side compaction: include
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` in a
@@ -11,7 +11,8 @@ Docs: https://developers.openai.com/api/docs/guides/compaction
 
 Hermes' support is deliberately narrow (live verification, Aug 2026):
 
-* **gpt-5.6 family only.** gpt-5.6 and its variants compact correctly.
+* **Explicitly supported model families only.** gpt-5.6 and gpt-6-astra
+  families compact correctly when the endpoint exposes the documented fields.
   Sending the field to gpt-5.1 / gpt-5.2 reliably fails server-side —
   HTTP 500 on the blocking path and a permanent stall on the streaming
   path (90s watchdog x 3 retries = a dead turn). There is no structured
@@ -60,12 +61,13 @@ DEFAULT_COMPACT_THRESHOLD = 200_000
 
 # Model-family gate. Substring match on the lowercased model id so dated
 # snapshots (gpt-5.6-2026-07-xx) and variants (gpt-5.6-mini) stay eligible.
-_ELIGIBLE_MODEL_MARKER = "gpt-5.6"
+_ELIGIBLE_MODEL_MARKERS = ("gpt-5.6", "gpt-6-astra")
 
 
 def is_native_compaction_model(model: Optional[str]) -> bool:
-    """True when the model is in the gpt-5.6 family."""
-    return _ELIGIBLE_MODEL_MARKER in (model or "").lower()
+    """True when the model is in an explicitly supported model family."""
+    normalized = (model or "").lower()
+    return any(marker in normalized for marker in _ELIGIBLE_MODEL_MARKERS)
 
 
 def resolve_native_compaction_capabilities(

@@ -189,6 +189,9 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             # paying for actually went out on the wire (July 2026 incident:
             # a config-matching bug silently dropped flex -> 2.3x billing).
             "service_tier": result.get("service_tier"),
+            "reasoning_backend": result.get("reasoning_backend"),
+            "reasoning_capabilities": result.get("reasoning_capabilities"),
+            "reasoning_metrics": result.get("reasoning_metrics"),
         }
         if failure is not None:
             report["failure"] = failure
@@ -206,6 +209,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    reasoning_backend: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -283,6 +287,7 @@ def run_oneshot(
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                     skills=skills,
+                    reasoning_backend=reasoning_backend,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -361,6 +366,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    reasoning_backend: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -515,6 +521,7 @@ def _run_agent(
             #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
             #   - skill secret capture → returns gracefully when no callback set
             clarify_callback=_oneshot_clarify_callback,
+            reasoning_backend=reasoning_backend,
         )
 
         # Belt-and-braces: make sure AIAgent doesn't invoke any streaming

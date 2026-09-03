@@ -210,6 +210,13 @@ def build_top_level_parser():
             "(or per-model under agent.reasoning_overrides)."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--reasoning-backend",
+        default=None,
+        metavar="BACKEND",
+        help="Reasoning substrate: legacy or arc_continuous (default: config.yaml).",
+    )
     parser.add_argument(
         "-t",
         "--toolsets",
@@ -418,6 +425,13 @@ def build_top_level_parser():
             "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "
             "this run only (same levels as the /reasoning slash command)."
         ),
+    )
+    _inherited_flag(
+        chat_parser,
+        "--reasoning-backend",
+        default=argparse.SUPPRESS,
+        metavar="BACKEND",
+        help="Reasoning substrate: legacy or arc_continuous.",
     )
     _inherited_flag(
         chat_parser,

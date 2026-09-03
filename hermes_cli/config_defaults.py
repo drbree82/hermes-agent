@@ -6,6 +6,9 @@ verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Selects the reasoning-loop substrate while preserving Hermes' normal
+    # tools, sessions, and UX.  `legacy` is the compatibility default.
+    "reasoning_backend": "legacy",
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},

@@ -5226,6 +5226,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        reasoning_backend: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -5246,6 +5247,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
+        self.reasoning_backend = str(
+            reasoning_backend
+            or CLI_CONFIG.get("reasoning_backend")
+            or "legacy"
+        ).strip().lower()
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
@@ -21777,6 +21783,7 @@ def main(
     model: str = None,
     provider: str = None,
     reasoning: str = None,
+    reasoning_backend: str = None,
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
@@ -21986,6 +21993,7 @@ def main(
             toolsets=toolsets_list,
             provider=provider,
             reasoning=reasoning,
+            reasoning_backend=reasoning_backend,
             api_key=api_key,
             base_url=base_url,
             max_turns=max_turns,

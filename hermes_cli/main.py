@@ -210,6 +210,7 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    reasoning_backend: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -221,6 +222,7 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            reasoning_backend=reasoning_backend,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -2957,6 +2959,7 @@ def _launch_tui(
     pass_session_id: bool = False,
     max_turns: Optional[int] = None,
     accept_hooks: bool = False,
+    reasoning_backend: Optional[str] = None,
 ):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -3047,6 +3050,8 @@ def _launch_tui(
         env["HERMES_TUI_CHECKPOINTS"] = "1"
     if pass_session_id:
         env["HERMES_TUI_PASS_SESSION_ID"] = "1"
+    if reasoning_backend:
+        env["HERMES_REASONING_BACKEND"] = reasoning_backend
     if max_turns is not None:
         env["HERMES_TUI_MAX_TURNS"] = str(max_turns)
     if verbose:
@@ -3473,6 +3478,7 @@ def cmd_chat(args):
             pass_session_id=getattr(args, "pass_session_id", False),
             max_turns=getattr(args, "max_turns", None),
             accept_hooks=getattr(args, "accept_hooks", False),
+            reasoning_backend=getattr(args, "reasoning_backend", None),
         )
 
     # --query-file: read the single query from a file (or stdin via '-') so
@@ -3505,6 +3511,7 @@ def cmd_chat(args):
         "model": args.model,
         "provider": getattr(args, "provider", None),
         "reasoning": getattr(args, "reasoning", None),
+        "reasoning_backend": getattr(args, "reasoning_backend", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),
@@ -13101,6 +13108,7 @@ def _try_fast_chat_launch() -> bool:
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
+            reasoning_backend=getattr(args, "reasoning_backend", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -13159,6 +13167,7 @@ def _try_termux_fast_cli_launch() -> bool:
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
+            reasoning_backend=getattr(args, "reasoning_backend", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -15158,6 +15167,7 @@ def main():
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
+            reasoning_backend=getattr(args, "reasoning_backend", None),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat
