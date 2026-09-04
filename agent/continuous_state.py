@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-CONTINUOUS_STATE_SCHEMA_VERSION = 1
+CONTINUOUS_STATE_SCHEMA_VERSION = 2
 _MAX_RECENT_OBSERVATIONS = 18
 _MAX_FACTS = 24
 _MAX_DECISIONS = 18
@@ -32,7 +32,21 @@ _MAX_FAILURES = 12
 _MAX_TRAJECTORY_COMPACTIONS = 12
 _MAX_EVENT_KEYS = 256
 _MAX_EXCERPT_CHARS = 4_000
+_MAX_STATE_VALUE_CHARS = 1_200
+_MAX_TASK_HISTORY = 8
 _PATH_RE = re.compile(r"(?:^|[\s'\"`(])((?:/|\./|\.\./|[A-Za-z]:[\\/])[^\s'\"`,;)]+)")
+_STATE_DELTA_RE = re.compile(
+    r"<hermes-state-delta>\s*(\{.*?\})\s*</hermes-state-delta>", re.DOTALL
+)
+_SECRET_RE = re.compile(
+    r"(?i)(?:api[_ -]?key|access[_ -]?token|auth(?:orization)?|password|secret)"
+    r"\s*[:=]\s*[^\s,;]+|\b(?:sk|rk)-[A-Za-z0-9_-]{12,}\b"
+)
+_TASK_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+    "how", "i", "in", "is", "it", "me", "of", "on", "or", "please",
+    "should", "the", "this", "to", "we", "with", "you", "your", "now",
+}
 
 
 def _text(value: Any) -> str:
@@ -58,6 +72,49 @@ def _excerpt(value: Any, limit: int = _MAX_EXCERPT_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 24)] + " …[truncated]"
+
+
+def _state_text(value: Any, limit: int = _MAX_STATE_VALUE_CHARS) -> str:
+    """Bound and redact text before it enters durable auxiliary state."""
+
+    return _excerpt(_SECRET_RE.sub("[REDACTED]", _text(value)), limit)
+
+
+def _bounded_values(values: Any, limit: int) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for value in values:
+        item = _state_text(value)
+        if item and item not in result:
+            result.append(item)
+    return result[-limit:]
+
+
+def _task_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+    for token in re.findall(r"[a-z0-9_./:-]{3,}", _text(value).lower()):
+        token = token.strip(".,:;!?()[]{}")
+        if token.endswith("ing") and len(token) > 5:
+            token = token[:-3]
+        if token and token not in _TASK_STOPWORDS:
+            tokens.add(token)
+    return tokens
+
+
+def _task_similarity(left: Any, right: Any) -> float:
+    a, b = _task_tokens(left), _task_tokens(right)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _explicit_task_switch(value: Any) -> bool:
+    return bool(re.search(
+        r"\b(?:now|instead|switch|new task|different task|forget|abandon|"
+        r"drop|stop working on|move on to|replace)\b",
+        _text(value).lower(),
+    ))
 
 
 def _json_key(value: Any) -> str:
@@ -88,7 +145,15 @@ class ContinuousState:
 
     schema_version: int = CONTINUOUS_STATE_SCHEMA_VERSION
     state_id: str = ""
+    session_context: list[str] = field(default_factory=list)
+    session_facts: list[str] = field(default_factory=list)
+    session_artifacts: list[str] = field(default_factory=list)
     objective: str = ""
+    current_task_objective: str = ""
+    current_user_turn_objective: str = ""
+    task_id: str = ""
+    task_epoch: int = 0
+    task_history: list[dict[str, Any]] = field(default_factory=list)
     current_plan: list[str] = field(default_factory=list)
     current_working_state: str = ""
     important_facts: list[str] = field(default_factory=list)
@@ -113,7 +178,7 @@ class ContinuousState:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any], *, state_id: str) -> "ContinuousState":
         version = value.get("schema_version", 0)
-        if version != CONTINUOUS_STATE_SCHEMA_VERSION:
+        if version not in (1, CONTINUOUS_STATE_SCHEMA_VERSION):
             raise ValueError(
                 f"Unsupported continuous state schema_version={version!r}; "
                 f"expected {CONTINUOUS_STATE_SCHEMA_VERSION}."
@@ -122,6 +187,8 @@ class ContinuousState:
         payload = {key: value[key] for key in fields if key in value}
         payload["state_id"] = str(payload.get("state_id") or state_id)
         state = cls(**payload)
+        if version == 1 and not state.current_task_objective:
+            state.current_task_objective = str(state.objective or "")
         state._normalise()
         return state
 
@@ -129,6 +196,9 @@ class ContinuousState:
         self.schema_version = CONTINUOUS_STATE_SCHEMA_VERSION
         self.state_id = str(self.state_id or "")
         for name in (
+            "session_context",
+            "session_facts",
+            "session_artifacts",
             "current_plan",
             "important_facts",
             "decisions",
@@ -147,15 +217,24 @@ class ContinuousState:
             value = getattr(self, name)
             if not isinstance(value, list):
                 setattr(self, name, [])
-        self.current_plan = [str(item) for item in self.current_plan if item]
-        self.important_facts = [str(item) for item in self.important_facts if item]
-        self.decisions = [str(item) for item in self.decisions if item]
-        self.hypotheses = [str(item) for item in self.hypotheses if item]
-        self.unresolved_questions = [str(item) for item in self.unresolved_questions if item]
-        self.artifacts = [str(item) for item in self.artifacts if item]
-        self.failures_and_retries = [str(item) for item in self.failures_and_retries if item]
-        self.active_constraints = [str(item) for item in self.active_constraints if item]
-        self.completion_criteria = [str(item) for item in self.completion_criteria if item]
+        self.session_context = _bounded_values(self.session_context, 12)
+        self.session_facts = _bounded_values(self.session_facts, _MAX_FACTS)
+        self.session_artifacts = _bounded_values(self.session_artifacts, 24)
+        self.current_plan = _bounded_values(self.current_plan, 10)
+        self.important_facts = _bounded_values(self.important_facts, _MAX_FACTS)
+        self.decisions = _bounded_values(self.decisions, _MAX_DECISIONS)
+        self.hypotheses = _bounded_values(self.hypotheses, 12)
+        self.unresolved_questions = _bounded_values(self.unresolved_questions, 12)
+        self.artifacts = _bounded_values(self.artifacts, 24)
+        self.failures_and_retries = _bounded_values(self.failures_and_retries, _MAX_FAILURES)
+        self.active_constraints = _bounded_values(self.active_constraints, 12)
+        self.completion_criteria = _bounded_values(self.completion_criteria, 12)
+        self.objective = _state_text(self.objective, 8_000)
+        self.current_task_objective = _state_text(self.current_task_objective, 8_000)
+        self.current_user_turn_objective = _state_text(self.current_user_turn_objective, 8_000)
+        self.current_working_state = _state_text(self.current_working_state, 2_400)
+        self.task_id = _state_text(self.task_id, 160)
+        self.task_history = [item for item in self.task_history if isinstance(item, dict)][-_MAX_TASK_HISTORY:]
         self.event_keys = [str(item) for item in self.event_keys][- _MAX_EVENT_KEYS :]
         self.tool_observations = [
             item for item in self.tool_observations if isinstance(item, dict)
@@ -165,6 +244,10 @@ class ContinuousState:
             for item in self.durable_tool_observations
             if isinstance(item, dict)
         ][-32:]
+        for observations in (self.tool_observations, self.durable_tool_observations):
+            for item in observations:
+                item["observation"] = _state_text(item.get("observation"), 1_600)
+                item["tool"] = _state_text(item.get("tool"), 160)
 
     def to_dict(self) -> dict[str, Any]:
         self._normalise()
@@ -179,6 +262,8 @@ class ContinuousStateStore:
         self.path = path
         self.state = self._load()
         self._turn_objective = ""
+        self._pending_metrics: dict[str, int] = {}
+        self._last_task_event = "resumed" if self.state.task_epoch else "started"
 
     @classmethod
     def for_agent(cls, agent: Any) -> "ContinuousStateStore":
@@ -216,14 +301,123 @@ class ContinuousStateStore:
             # leave the original file available for debugging.
             return ContinuousState(state_id=self.state_id)
 
-    def begin_turn(self, objective: Any) -> None:
-        self._turn_objective = _excerpt(objective, 8_000)
-        if not self.state.objective:
-            self.state.objective = self._turn_objective
+    def begin_turn(self, objective: Any, *, task_id: str | None = None) -> None:
+        """Start a user turn and classify it against the task trajectory.
+
+        Similarity is only one signal. Explicit replacement language, shared
+        artifacts, and matching archived task snapshots are combined so a
+        short refinement is not mistaken for a new task, while a new task is
+        never allowed to inherit the prior task's plan and hypotheses.
+        """
+
+        self._turn_objective = _state_text(objective, 8_000)
+        previous = self.state.current_task_objective or self.state.objective
+        self.state.current_user_turn_objective = self._turn_objective
+        if not previous:
+            self._start_task(self._turn_objective, task_id=task_id, reason="initial")
+        else:
+            similarity = _task_similarity(previous, self._turn_objective)
+            artifact_overlap = bool(
+                set(_PATH_RE.findall(previous)) & set(_PATH_RE.findall(self._turn_objective))
+            )
+            explicit_switch = _explicit_task_switch(self._turn_objective)
+            matching_history = self._matching_task_snapshot(self._turn_objective)
+            if matching_history is not None and (explicit_switch or similarity < 0.35):
+                self._archive_current_task("topic_switch")
+                self._restore_task(matching_history, reason="return_to_previous_task")
+            elif explicit_switch or (similarity < 0.12 and not artifact_overlap):
+                self._archive_current_task("replaced")
+                self._start_task(self._turn_objective, task_id=task_id, reason="new_task")
+            else:
+                self._last_task_event = "continued"
+                self.state.current_task_objective = previous
+                self.state.objective = previous
+                self.state.task_id = self.state.task_id or self._task_identifier(task_id)
         self.state.turns += 1
         self.state.last_updated_at = time.time()
         self._derive_objective_fields(self._turn_objective)
         self.checkpoint("turn_start")
+
+    def _task_identifier(self, turn_id: str | None) -> str:
+        return f"{self.state.state_id}:task-{self.state.task_epoch}" + (
+            f":{_safe_filename(turn_id)}" if turn_id else ""
+        )
+
+    def _start_task(self, objective: str, *, task_id: str | None, reason: str) -> None:
+        self.state.task_epoch += 1
+        self.state.task_id = self._task_identifier(task_id)
+        self.state.current_task_objective = objective
+        self.state.objective = objective
+        self.state.current_plan = []
+        self.state.current_working_state = ""
+        self.state.important_facts = []
+        self.state.decisions = []
+        self.state.hypotheses = []
+        self.state.unresolved_questions = []
+        self.state.tool_observations = []
+        self.state.durable_tool_observations = []
+        self.state.artifacts = []
+        self.state.failures_and_retries = []
+        self.state.active_constraints = []
+        self.state.completion_criteria = []
+        self.state.session_context = _merge_recent(self.state.session_context, [objective], 12)
+        self._last_task_event = reason
+        self._record_metric("task_epoch_changes", 1)
+        self._record_metric("task_state_resets", 1)
+
+    def _task_snapshot(self, status: str) -> dict[str, Any]:
+        return {
+            "objective": self.state.current_task_objective or self.state.objective,
+            "task_id": self.state.task_id,
+            "task_epoch": self.state.task_epoch,
+            "status": status,
+            "current_plan": list(self.state.current_plan),
+            "current_working_state": self.state.current_working_state,
+            "important_facts": list(self.state.important_facts),
+            "decisions": list(self.state.decisions),
+            "hypotheses": list(self.state.hypotheses),
+            "unresolved_questions": list(self.state.unresolved_questions),
+            "durable_tool_observations": list(self.state.durable_tool_observations),
+            "artifacts": list(self.state.artifacts),
+            "failures_and_retries": list(self.state.failures_and_retries),
+            "active_constraints": list(self.state.active_constraints),
+            "completion_criteria": list(self.state.completion_criteria),
+        }
+
+    def _archive_current_task(self, status: str) -> None:
+        if self.state.current_task_objective:
+            self.state.session_facts = _merge_recent(
+                self.state.session_facts, self.state.important_facts, _MAX_FACTS
+            )
+            self.state.session_artifacts = _merge_recent(
+                self.state.session_artifacts, self.state.artifacts, 24
+            )
+            self.state.task_history = (
+                self.state.task_history + [self._task_snapshot(status)]
+            )[-_MAX_TASK_HISTORY:]
+
+    def _matching_task_snapshot(self, objective: str) -> dict[str, Any] | None:
+        candidates = [
+            item for item in self.state.task_history
+            if _task_similarity(item.get("objective"), objective) >= 0.30
+        ]
+        return max(candidates, key=lambda item: _task_similarity(item.get("objective"), objective), default=None)
+
+    def _restore_task(self, snapshot: Mapping[str, Any], *, reason: str) -> None:
+        self.state.task_epoch += 1
+        self.state.task_id = self._task_identifier(None)
+        self.state.objective = _state_text(snapshot.get("objective"), 8_000)
+        self.state.current_task_objective = self.state.objective
+        for name in (
+            "current_plan", "important_facts", "decisions", "hypotheses",
+            "unresolved_questions", "durable_tool_observations", "artifacts",
+            "failures_and_retries", "active_constraints", "completion_criteria",
+        ):
+            setattr(self.state, name, list(snapshot.get(name) or []))
+        self.state.tool_observations = []
+        self.state.current_working_state = _state_text(snapshot.get("current_working_state"), 2_400)
+        self._last_task_event = reason
+        self._record_metric("task_epoch_changes", 1)
 
     def observe_messages(self, messages: Iterable[Mapping[str, Any]]) -> None:
         message_list = [message for message in messages if isinstance(message, Mapping)]
@@ -299,6 +493,7 @@ class ContinuousStateStore:
         self.state.compacted_trajectory = self.state.compacted_trajectory[-_MAX_TRAJECTORY_COMPACTIONS:]
         self.state.compaction_count += 1
         self._record_metric("trajectory_compactions", 1)
+        self._record_metric("state_compaction_events", 1)
         self.checkpoint("trajectory_compaction")
         return True
 
@@ -364,7 +559,19 @@ class ContinuousStateStore:
         for index, item in enumerate(cleaned):
             if item.get("role") == "system" or index >= current_marker:
                 projected.append(item)
+        omitted_tokens = max(
+            0,
+            sum(len(_text(item.get("content"))) for item in cleaned)
+            - sum(len(_text(item.get("content"))) for item in projected),
+        ) // 4
+        self._record_metric("legacy_transcript_tokens_omitted", omitted_tokens)
         capsule = self.render_capsule()
+        self._set_metric("capsule_chars", len(capsule))
+        self._set_metric("capsule_tokens", max(1, len(capsule) // 4))
+        self._set_metric("state_facts", len(self.state.important_facts))
+        self._set_metric("state_constraints", len(self.state.active_constraints))
+        self._set_metric("durable_tool_observations", len(self.state.durable_tool_observations))
+        self._set_metric("continuous_state_bytes", len(json.dumps(self.state.to_dict(), ensure_ascii=False)))
         for item in projected:
             if item.get("role") == "user":
                 item["content"] = _append_text(item.get("content"), capsule)
@@ -392,11 +599,14 @@ class ContinuousStateStore:
             for item in self.state.durable_tool_observations[-6:]
         ]
         return (
-            "<hermes-continuous-state schema_version=1>\n"
+            "<hermes-continuous-state schema_version=2>\n"
             "This is the persistent working state for the active task. "
             "Use it as operational memory; do not restart completed work or "
             "discard constraints merely because older chat turns are omitted.\n"
-            f"Objective: {self.state.objective or self._turn_objective or 'unknown'}\n"
+            f"Session context: {', '.join(self.state.session_context[-3:]) or 'none'}\n"
+            f"Task epoch: {self.state.task_epoch}; task id: {self.state.task_id or 'unknown'}\n"
+            f"Current task objective: {self.state.current_task_objective or self.state.objective or 'unknown'}\n"
+            f"Current user-turn objective: {self.state.current_user_turn_objective or self._turn_objective or 'unknown'}\n"
             f"Current working state: {self.state.current_working_state or 'not yet observed'}\n"
             + block("Current plan", self.state.current_plan)
             + "\n"
@@ -419,7 +629,8 @@ class ContinuousStateStore:
             + block("Active constraints", self.state.active_constraints)
             + "\n"
             + block("Completion criteria", self.state.completion_criteria)
-            + "\n</hermes-continuous-state>"
+            + "\nWhen a transition creates a verified fact, decision, changed artifact, resolved question, or plan replacement, optionally append a small valid JSON state delta in <hermes-state-delta>...</hermes-state-delta>; never repeat the full capsule.\n"
+            "</hermes-continuous-state>"
         )
 
     def checkpoint(self, reason: str) -> dict[str, Any]:
@@ -467,9 +678,19 @@ class ContinuousStateStore:
             "schema_version": self.state.schema_version,
             "state_id": self.state.state_id,
             "objective": self.state.objective,
+            "session_context": list(self.state.session_context[-3:]),
+            "current_task_objective": self.state.current_task_objective,
+            "current_user_turn_objective": self.state.current_user_turn_objective,
+            "task_id": self.state.task_id,
+            "task_epoch": self.state.task_epoch,
+            "task_event": self._last_task_event,
+            "task_history": len(self.state.task_history),
             "turns": self.state.turns,
             "observed_messages": self.state.observed_messages,
             "tool_observations": len(self.state.tool_observations),
+            "durable_tool_observations": len(self.state.durable_tool_observations),
+            "important_facts": len(self.state.important_facts),
+            "active_constraints": len(self.state.active_constraints),
             "compaction_count": self.state.compaction_count,
             "checkpoint_count": self.state.checkpoint_count,
             "last_checkpoint": self.state.checkpoints[-1] if self.state.checkpoints else None,
@@ -496,6 +717,9 @@ class ContinuousStateStore:
     def _derive_assistant_fields(self, content: str) -> None:
         if not content:
             return
+        delta = _extract_state_delta(content)
+        if delta is not None:
+            self._apply_state_delta(delta)
         lines = [line.strip() for line in content.splitlines() if line.strip()]
         plan_lines = [
             re.sub(r"^(?:[-*]|\d+[.)])\s+", "", line).strip()
@@ -503,20 +727,78 @@ class ContinuousStateStore:
             if re.match(r"^(?:[-*]|\d+[.)])\s+", line)
         ]
         if plan_lines:
-            self.state.current_plan = plan_lines[-10:]
+            # Structured deltas replace the plan deliberately. Heuristics are
+            # retained only for providers that do not emit a delta.
+            if delta is None or not delta.get("plan_replace"):
+                self.state.current_plan = [_state_text(line) for line in plan_lines[-10:]]
         lower = content.lower()
-        if any(word in lower for word in ("decided", "will use", "choosing", "therefore")):
+        if delta is None and any(word in lower for word in ("decided", "will use", "choosing", "therefore")):
             self.state.decisions = _merge_recent(self.state.decisions, lines[-3:], _MAX_DECISIONS)
-        if any(word in lower for word in ("hypothesis", "assume", "likely", "suspect")):
+        if delta is None and any(word in lower for word in ("hypothesis", "assume", "likely", "suspect")):
             self.state.hypotheses = _merge_recent(self.state.hypotheses, lines[-3:], 12)
-        self.state.unresolved_questions = _merge_recent(
-            self.state.unresolved_questions,
-            [line for line in lines if line.endswith("?")],
-            12,
+        if delta is None:
+            self.state.unresolved_questions = _merge_recent(
+                self.state.unresolved_questions,
+                [_state_text(line) for line in lines if line.endswith("?")],
+                12,
+            )
+
+    def _apply_state_delta(self, delta: Mapping[str, Any]) -> None:
+        before = {name: len(getattr(self.state, name)) for name in (
+            "important_facts", "hypotheses", "unresolved_questions"
+        )}
+        self.state.important_facts = _merge_recent(
+            self.state.important_facts, delta.get("facts_add", []), _MAX_FACTS
         )
+        self.state.important_facts = [
+            item for item in self.state.important_facts
+            if item not in set(_bounded_values(delta.get("facts_remove", []), _MAX_FACTS))
+        ]
+        self.state.decisions = _merge_recent(
+            self.state.decisions, delta.get("decisions_add", []), _MAX_DECISIONS
+        )
+        self.state.decisions = [
+            item for item in self.state.decisions
+            if item not in set(_bounded_values(delta.get("decisions_remove", []), _MAX_DECISIONS))
+        ]
+        self.state.hypotheses = _merge_recent(self.state.hypotheses, delta.get("hypotheses_add", []), 12)
+        self.state.hypotheses = [
+            item for item in self.state.hypotheses
+            if item not in set(_bounded_values(delta.get("hypotheses_resolved", []), 12))
+        ]
+        self.state.unresolved_questions = _merge_recent(
+            self.state.unresolved_questions, delta.get("questions_add", []), 12
+        )
+        self.state.unresolved_questions = [
+            item for item in self.state.unresolved_questions
+            if item not in set(_bounded_values(delta.get("resolved_questions", []), 12))
+        ]
+        if delta.get("plan_replace"):
+            self.state.current_plan = _bounded_values(delta["plan_replace"], 10)
+        if delta.get("working_state") is not None:
+            self.state.current_working_state = _state_text(delta["working_state"], 2_400)
+        self.state.active_constraints = _merge_recent(
+            self.state.active_constraints, delta.get("constraints_add", []), 12
+        )
+        self.state.active_constraints = [
+            item for item in self.state.active_constraints
+            if item not in set(_bounded_values(delta.get("constraints_remove", []), 12))
+        ]
+        self.state.artifacts = _merge_recent(self.state.artifacts, delta.get("artifacts_add", []), 24)
+        self.state.completion_criteria = _merge_recent(
+            self.state.completion_criteria, delta.get("completion_criteria_add", []), 12
+        )
+        if delta.get("completion_criteria_replace"):
+            self.state.completion_criteria = _bounded_values(delta["completion_criteria_replace"], 12)
+        for name, metric in (("important_facts", "facts_added"), ("hypotheses", "hypotheses_added"), ("unresolved_questions", "questions_added")):
+            self._record_metric(metric, max(0, len(getattr(self.state, name)) - before[name]))
+        self._record_metric("facts_removed", len(delta.get("facts_remove", [])))
+        self._record_metric("hypotheses_resolved", len(delta.get("hypotheses_resolved", [])))
+        self._record_metric("questions_resolved", len(delta.get("resolved_questions", [])))
 
     def _record_tool_observation(self, message: Mapping[str, Any], content: str) -> None:
         tool_name = str(message.get("name") or message.get("tool_name") or "tool")
+        content = _state_text(content, 1_600)
         observation = {
             "tool": tool_name,
             "call_id": str(message.get("tool_call_id") or ""),
@@ -534,6 +816,13 @@ class ContinuousStateStore:
                 [f"{tool_name}: {content}"],
                 _MAX_FAILURES,
             )
+        if observation["failed"] or _looks_operationally_important(content):
+            self.state.important_facts = _merge_recent(
+                self.state.important_facts,
+                [f"{tool_name}: {content}"],
+                _MAX_FACTS,
+            )
+            self._record_metric("facts_added", 1)
 
     def _record_artifacts(self, message: Mapping[str, Any]) -> None:
         for value in message.get("tool_calls") or []:
@@ -545,10 +834,28 @@ class ContinuousStateStore:
         self.state.artifacts = _merge_recent(self.state.artifacts, found, 24)
 
     def _record_metric(self, key: str, amount: int) -> None:
+        if not amount:
+            return
         agent = getattr(self, "_agent", None)
         metrics = getattr(agent, "_reasoning_metrics", None) if agent else None
         if metrics is not None and hasattr(metrics, key):
             setattr(metrics, key, int(getattr(metrics, key, 0) or 0) + amount)
+        else:
+            self._pending_metrics[key] = self._pending_metrics.get(key, 0) + amount
+
+    def _set_metric(self, key: str, value: int) -> None:
+        agent = getattr(self, "_agent", None)
+        metrics = getattr(agent, "_reasoning_metrics", None) if agent else None
+        if metrics is not None and hasattr(metrics, key):
+            setattr(metrics, key, int(value))
+        else:
+            # A set-before-metrics value is kept as a one-item pending update.
+            self._pending_metrics[key] = int(value)
+
+    def flush_metrics(self) -> None:
+        pending, self._pending_metrics = self._pending_metrics, {}
+        for key, amount in pending.items():
+            self._record_metric(key, amount)
 
 
 def _append_text(content: Any, suffix: str) -> Any:
@@ -597,3 +904,36 @@ def _looks_operationally_important(value: str) -> bool:
 
 def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)[:160] or "session"
+
+
+def _extract_state_delta(content: str) -> dict[str, Any] | None:
+    """Parse only the explicit, bounded state protocol; malformed output is ignored."""
+
+    match = _STATE_DELTA_RE.search(content)
+    if not match:
+        return None
+    try:
+        raw = json.loads(match.group(1))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    allowed = {
+        "facts_add", "facts_remove", "decisions_add", "decisions_remove",
+        "hypotheses_add", "hypotheses_resolved", "questions_add",
+        "resolved_questions", "constraints_add", "constraints_remove",
+        "artifacts_add", "plan_replace", "working_state",
+        "completion_criteria_add", "completion_criteria_replace",
+    }
+    result: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in allowed:
+            continue
+        if key == "working_state":
+            if isinstance(value, str):
+                result[key] = _state_text(value, 2_400)
+            continue
+        if not isinstance(value, list) or len(value) > 24:
+            continue
+        result[key] = _bounded_values(value, 24)
+    return result

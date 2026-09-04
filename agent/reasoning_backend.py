@@ -137,6 +137,22 @@ class ReasoningMetrics:
     native_state_reuses: int = 0
     native_state_mode: str = "none"
     estimated_cost_usd: Optional[float] = None
+    continuous_state_bytes: int = 0
+    capsule_chars: int = 0
+    capsule_tokens: int = 0
+    state_facts: int = 0
+    state_constraints: int = 0
+    durable_tool_observations: int = 0
+    task_epoch_changes: int = 0
+    task_state_resets: int = 0
+    facts_added: int = 0
+    facts_removed: int = 0
+    hypotheses_added: int = 0
+    hypotheses_resolved: int = 0
+    questions_added: int = 0
+    questions_resolved: int = 0
+    state_compaction_events: int = 0
+    legacy_transcript_tokens_omitted: int = 0
 
     def finish(self, result: Any, agent: Any) -> None:
         self.duration_ms = max(0.0, (time.time() - self.started_at) * 1000.0)
@@ -236,6 +252,22 @@ class ReasoningMetrics:
             "native_state_reuses": self.native_state_reuses,
             "native_state_mode": self.native_state_mode,
             "estimated_cost_usd": self.estimated_cost_usd,
+            "continuous_state_bytes": self.continuous_state_bytes,
+            "capsule_chars": self.capsule_chars,
+            "capsule_tokens": self.capsule_tokens,
+            "state_facts": self.state_facts,
+            "state_constraints": self.state_constraints,
+            "durable_tool_observations": self.durable_tool_observations,
+            "task_epoch_changes": self.task_epoch_changes,
+            "task_state_resets": self.task_state_resets,
+            "facts_added": self.facts_added,
+            "facts_removed": self.facts_removed,
+            "hypotheses_added": self.hypotheses_added,
+            "hypotheses_resolved": self.hypotheses_resolved,
+            "questions_added": self.questions_added,
+            "questions_resolved": self.questions_resolved,
+            "state_compaction_events": self.state_compaction_events,
+            "legacy_transcript_tokens_omitted": self.legacy_transcript_tokens_omitted,
         }
 
 
@@ -273,6 +305,9 @@ class ReasoningBackend:
             else "legacy_transcript"
         )
         agent._reasoning_metrics = metrics
+        continuous_store = getattr(agent, "_continuous_state_store", None)
+        if continuous_store is not None:
+            continuous_store.flush_metrics()
         originals = self._install_observers(agent, metrics)
         try:
             result = runner(agent, *args, **kwargs)
@@ -368,7 +403,8 @@ class ArcContinuousReasoningBackend(ReasoningBackend):
         manager = ContinuousStateStore.for_agent(agent)
         manager._agent = agent
         objective = args[0] if args else kwargs.get("user_message", "")
-        manager.begin_turn(objective)
+        turn_task_id = args[3] if len(args) > 3 else kwargs.get("task_id")
+        manager.begin_turn(objective, task_id=turn_task_id)
         capabilities = resolve_provider_capabilities(agent)
         agent._reasoning_native_tier = (
             3
@@ -379,6 +415,7 @@ class ArcContinuousReasoningBackend(ReasoningBackend):
         previous_hook = getattr(agent, "_reasoning_backend_prepare_context", None)
         agent._reasoning_backend_prepare_context = manager.prepare_api_messages
         try:
+            manager.flush_metrics()
             result = super().run(agent, runner, *args, **kwargs)
             if isinstance(result, dict):
                 result_messages = result.get("messages") or []

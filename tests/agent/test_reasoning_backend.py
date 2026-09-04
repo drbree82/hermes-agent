@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -158,7 +159,7 @@ def test_substrate_projects_active_turn_and_persists_working_state(tmp_path):
 
     assert len(projected) == 4  # system + active user turn and its two follow-ups
     assert not any("earlier unrelated" in str(item) for item in projected)
-    assert "<hermes-continuous-state schema_version=1>" in projected[1]["content"]
+    assert "<hermes-continuous-state schema_version=2>" in projected[1]["content"]
     assert store.state.current_plan == ["Inspect the failing test", "Apply the smallest fix"]
     assert store.state.failures_and_retries
     assert (tmp_path / "state.json").exists()
@@ -166,6 +167,88 @@ def test_substrate_projects_active_turn_and_persists_working_state(tmp_path):
     resumed = ContinuousStateStore(state_id="session-1", path=tmp_path / "state.json")
     assert resumed.state.objective == "Repair the repository and keep the tests passing."
     assert resumed.state.checkpoint_count >= 1
+
+
+def test_task_lifecycle_continuation_refinement_switch_and_return(tmp_path):
+    store = ContinuousStateStore(state_id="lifecycle", path=tmp_path / "state.json")
+    store.begin_turn("Fix the nginx configuration and verify the listener.")
+    first_epoch = store.state.task_epoch
+    store.state.current_plan = ["inspect nginx", "run config test"]
+    store.state.important_facts = ["nginx listens on 8080"]
+
+    store.begin_turn("Continue fixing nginx and test the listener after the change.")
+    assert store.state.task_epoch == first_epoch
+    assert store.state.current_plan == ["inspect nginx", "run config test"]
+
+    store.begin_turn("Now analyse this Python repository instead.")
+    assert store.state.task_epoch == first_epoch + 1
+    assert store.state.current_task_objective.startswith("Now analyse")
+    assert store.state.current_plan == []
+    assert store.state.important_facts == []
+
+    store.begin_turn("Return to the nginx configuration and verify the listener.")
+    assert store.state.task_epoch == first_epoch + 2
+    assert store.state.current_plan == ["inspect nginx", "run config test"]
+    assert store.state.important_facts == ["nginx listens on 8080"]
+
+
+def test_task_state_survives_restart_and_current_turn_is_distinct(tmp_path):
+    path = tmp_path / "state.json"
+    store = ContinuousStateStore(state_id="restart", path=path)
+    store.begin_turn("Repair the broken Docker healthcheck.")
+    store.state.important_facts = ["the service is exposed on port 8080"]
+    store.checkpoint("test_saved")
+
+    resumed = ContinuousStateStore(state_id="restart", path=path)
+    resumed.begin_turn("Please verify the Docker healthcheck fix.")
+    assert resumed.state.task_epoch == 1
+    assert resumed.state.current_user_turn_objective.startswith("Please verify")
+    assert resumed.state.important_facts == ["the service is exposed on port 8080"]
+
+
+def test_structured_state_delta_updates_and_prunes_state(tmp_path):
+    store = ContinuousStateStore(state_id="delta", path=tmp_path / "state.json")
+    store.begin_turn("Repair the service and leave it tested.")
+    delta = {
+        "facts_add": ["pytest passes after changing app.py"],
+        "decisions_add": ["Use the existing test suite"],
+        "hypotheses_add": ["The healthcheck is the root cause"],
+        "questions_add": ["Is the service ready?"],
+        "plan_replace": ["edit app.py", "run pytest"],
+        "working_state": "The code is fixed; verification remains.",
+    }
+    content = "<hermes-state-delta>" + json.dumps(delta) + "</hermes-state-delta>"
+    store.observe_messages([{"role": "assistant", "content": content}])
+    assert store.state.important_facts == ["pytest passes after changing app.py"]
+    assert store.state.current_plan == ["edit app.py", "run pytest"]
+    assert store.state.unresolved_questions == ["Is the service ready?"]
+
+    follow_up = {
+        "facts_remove": ["pytest passes after changing app.py"],
+        "hypotheses_resolved": ["The healthcheck is the root cause"],
+        "resolved_questions": ["Is the service ready?"],
+        "facts_add": ["pytest passes and the service is ready"],
+    }
+    store.observe_messages([{
+        "role": "assistant",
+        "content": "<hermes-state-delta>" + json.dumps(follow_up) + "</hermes-state-delta>",
+    }])
+    assert store.state.important_facts == ["pytest passes and the service is ready"]
+    assert store.state.hypotheses == []
+    assert store.state.unresolved_questions == []
+
+
+def test_tool_facts_are_bounded_and_secrets_are_not_persisted(tmp_path):
+    store = ContinuousStateStore(state_id="hygiene", path=tmp_path / "state.json")
+    store.begin_turn("Check the deployment result.")
+    store.observe_messages([{
+        "role": "tool",
+        "name": "terminal",
+        "content": "pytest passed in /workspace/app; API_KEY=sk-super-secret-value",
+    }])
+    assert store.state.important_facts
+    assert "super-secret" not in json.dumps(store.state.to_dict())
+    assert len(store.state.important_facts[0]) <= 1200
 
 
 def test_trajectory_compaction_deduplicates_redundant_observations(tmp_path):
