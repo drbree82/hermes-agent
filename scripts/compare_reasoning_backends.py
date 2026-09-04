@@ -18,6 +18,12 @@ import tempfile
 from pathlib import Path
 
 
+def _text(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value or "")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt", nargs="?", help="The identical task to run twice")
@@ -125,8 +131,8 @@ def main() -> int:
                 stderr = completed.stderr
                 return_code = completed.returncode
             except subprocess.TimeoutExpired as exc:
-                stdout = exc.stdout or ""
-                stderr = exc.stderr or ""
+                stdout = _text(exc.stdout)
+                stderr = _text(exc.stderr)
                 return_code = 124
 
             usage = {}
