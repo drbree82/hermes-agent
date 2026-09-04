@@ -1,0 +1,4 @@
+Evidence fragment 025
+Status: VERIFIED
+CONTROL=MIDDLE-42
+The middle control confirms the migration path. Combine it with the early anchor.

@@ -1,0 +1,4 @@
+Evidence fragment 050
+Status: VERIFIED
+CHECKSUM=LATE-91
+The late checksum closes the investigation. Combine it with the early and middle facts.

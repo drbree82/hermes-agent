@@ -1,0 +1,4 @@
+Evidence fragment 042
+Status: UNVERIFIED
+Candidate value: distractor-42
+Do not use this candidate in the report. It is intentionally plausible but unsupported.

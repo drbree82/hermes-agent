@@ -1,0 +1,4 @@
+Evidence fragment 001
+Status: VERIFIED
+ANCHOR=ORBIT-7
+The investigation begins with the orbit anchor. Preserve this fact for the final report.

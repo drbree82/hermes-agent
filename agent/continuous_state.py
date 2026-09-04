@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-CONTINUOUS_STATE_SCHEMA_VERSION = 2
+CONTINUOUS_STATE_SCHEMA_VERSION = 3
 _MAX_RECENT_OBSERVATIONS = 18
 _MAX_FACTS = 24
 _MAX_DECISIONS = 18
@@ -111,7 +111,7 @@ def _task_similarity(left: Any, right: Any) -> float:
 
 def _explicit_task_switch(value: Any) -> bool:
     return bool(re.search(
-        r"\b(?:now|instead|switch|new task|different task|forget|abandon|"
+    r"\b(?:instead|switch|new task|different task|forget|abandon|"
         r"drop|stop working on|move on to|replace)\b",
         _text(value).lower(),
     ))
@@ -154,6 +154,10 @@ class ContinuousState:
     task_id: str = ""
     task_epoch: int = 0
     task_history: list[dict[str, Any]] = field(default_factory=list)
+    continuity_mode: str = "collecting"
+    continuity_activation_reason: str = ""
+    projection_events: int = 0
+    last_compacted_observed_messages: int = 0
     current_plan: list[str] = field(default_factory=list)
     current_working_state: str = ""
     important_facts: list[str] = field(default_factory=list)
@@ -178,7 +182,7 @@ class ContinuousState:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any], *, state_id: str) -> "ContinuousState":
         version = value.get("schema_version", 0)
-        if version not in (1, CONTINUOUS_STATE_SCHEMA_VERSION):
+        if version not in (1, 2, CONTINUOUS_STATE_SCHEMA_VERSION):
             raise ValueError(
                 f"Unsupported continuous state schema_version={version!r}; "
                 f"expected {CONTINUOUS_STATE_SCHEMA_VERSION}."
@@ -235,6 +239,8 @@ class ContinuousState:
         self.current_working_state = _state_text(self.current_working_state, 2_400)
         self.task_id = _state_text(self.task_id, 160)
         self.task_history = [item for item in self.task_history if isinstance(item, dict)][-_MAX_TASK_HISTORY:]
+        self.continuity_mode = self.continuity_mode if self.continuity_mode in {"collecting", "projected", "provider_native"} else "collecting"
+        self.continuity_activation_reason = _state_text(self.continuity_activation_reason, 200)
         self.event_keys = [str(item) for item in self.event_keys][- _MAX_EVENT_KEYS :]
         self.tool_observations = [
             item for item in self.tool_observations if isinstance(item, dict)
@@ -264,6 +270,9 @@ class ContinuousStateStore:
         self._turn_objective = ""
         self._pending_metrics: dict[str, int] = {}
         self._last_task_event = "resumed" if self.state.task_epoch else "started"
+        self._activation_mode = self.state.continuity_mode
+        self._activation_reason = self.state.continuity_activation_reason
+        self._stream_delta_buffer = ""
 
     @classmethod
     def for_agent(cls, agent: Any) -> "ContinuousStateStore":
@@ -362,6 +371,10 @@ class ContinuousStateStore:
         self.state.completion_criteria = []
         self.state.session_context = _merge_recent(self.state.session_context, [objective], 12)
         self._last_task_event = reason
+        self._activation_mode = "collecting"
+        self._activation_reason = ""
+        self.state.continuity_mode = "collecting"
+        self.state.continuity_activation_reason = ""
         self._record_metric("task_epoch_changes", 1)
         self._record_metric("task_state_resets", 1)
 
@@ -417,6 +430,10 @@ class ContinuousStateStore:
         self.state.tool_observations = []
         self.state.current_working_state = _state_text(snapshot.get("current_working_state"), 2_400)
         self._last_task_event = reason
+        self._activation_mode = "collecting"
+        self._activation_reason = ""
+        self.state.continuity_mode = "collecting"
+        self.state.continuity_activation_reason = ""
         self._record_metric("task_epoch_changes", 1)
 
     def observe_messages(self, messages: Iterable[Mapping[str, Any]]) -> None:
@@ -430,11 +447,15 @@ class ContinuousStateStore:
             self.state.event_keys.append(key)
             role = str(message.get("role") or "")
             raw_content = _text(message.get("content"))
-            content = _excerpt(raw_content)
+            content = _excerpt(strip_state_delta_markup(raw_content))
             self.state.observed_messages += 1
             if role == "assistant":
                 latest_assistant = content or latest_assistant
-                self._derive_assistant_fields(raw_content)
+                delta = message.get("_hermes_state_delta")
+                if isinstance(delta, Mapping):
+                    self._apply_state_delta(delta)
+                else:
+                    self._derive_assistant_fields(raw_content)
                 self._record_artifacts(message)
             elif role == "tool":
                 latest_observation = content or latest_observation
@@ -447,6 +468,46 @@ class ContinuousStateStore:
         self.state.event_keys = self.state.event_keys[-_MAX_EVENT_KEYS:]
         self.state.last_updated_at = time.time()
 
+    def sanitize_assistant_message(self, message: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep the optional state protocol internal to Hermes."""
+
+        result = dict(message)
+        content = result.get("content")
+        if isinstance(content, str):
+            delta = _extract_state_delta(content)
+            if delta is not None:
+                result["_hermes_state_delta"] = delta
+                result["content"] = strip_state_delta_markup(content)
+        return result
+
+    def sanitize_stream_delta(self, text: str) -> str:
+        """Filter state blocks even when streaming splits them across chunks."""
+
+        if not isinstance(text, str):
+            return text
+        self._stream_delta_buffer += text
+        output: list[str] = []
+        opening = "<hermes-state-delta"
+        closing = "</hermes-state-delta>"
+        while self._stream_delta_buffer:
+            start = self._stream_delta_buffer.find(opening)
+            if start < 0:
+                keep = 0
+                for size in range(1, min(len(opening), len(self._stream_delta_buffer)) + 1):
+                    if opening.startswith(self._stream_delta_buffer[-size:]):
+                        keep = size
+                output.append(self._stream_delta_buffer[:-keep] if keep else self._stream_delta_buffer)
+                self._stream_delta_buffer = self._stream_delta_buffer[-keep:] if keep else ""
+                break
+            if start:
+                output.append(self._stream_delta_buffer[:start])
+            end = self._stream_delta_buffer.find(closing, start + len(opening))
+            if end < 0:
+                self._stream_delta_buffer = self._stream_delta_buffer[start:]
+                break
+            self._stream_delta_buffer = self._stream_delta_buffer[end + len(closing):]
+        return "".join(output)
+
     def maybe_compact(self, *, raw_messages: Iterable[Mapping[str, Any]], reason: str) -> bool:
         messages = list(raw_messages)
         raw_chars = sum(len(_text(message.get("content"))) for message in messages)
@@ -456,6 +517,8 @@ class ContinuousStateStore:
             or raw_chars >= 80_000
         )
         if not pressure:
+            return False
+        if self.state.observed_messages <= self.state.last_compacted_observed_messages:
             return False
 
         before = len(self.state.tool_observations)
@@ -492,6 +555,7 @@ class ContinuousStateStore:
         )
         self.state.compacted_trajectory = self.state.compacted_trajectory[-_MAX_TRAJECTORY_COMPACTIONS:]
         self.state.compaction_count += 1
+        self.state.last_compacted_observed_messages = self.state.observed_messages
         self._record_metric("trajectory_compactions", 1)
         self._record_metric("state_compaction_events", 1)
         self.checkpoint("trajectory_compaction")
@@ -532,12 +596,41 @@ class ContinuousStateStore:
                 native = getattr(agent, "_reasoning_native_tier", 0) >= 3
         cleaned = [dict(item) for item in api_messages]
         if native:
+            self._activation_mode = "provider_native"
+            self.state.continuity_mode = "provider_native"
             for item in cleaned:
                 item.pop("_hermes_source_index", None)
                 item.pop("_hermes_current_turn", None)
+                item.pop("_hermes_state_delta", None)
             self._record_metric("native_state_reuses", 1 if self.state.turns > 1 else 0)
+            self._set_metric_text("continuity_mode", "provider_native")
             self.checkpoint("native_turn")
             return cleaned
+
+        should_project, activation_reason = self._should_project(
+            cleaned, messages, current_turn_user_idx
+        )
+        if not should_project:
+            self._activation_mode = "collecting"
+            self.state.continuity_mode = "collecting"
+            self._record_metric("collecting_calls", 1)
+            self._set_metric_text("continuity_mode", "collecting")
+            for item in cleaned:
+                item.pop("_hermes_source_index", None)
+                item.pop("_hermes_current_turn", None)
+                item.pop("_hermes_state_delta", None)
+            self.checkpoint("collecting_turn")
+            return cleaned
+
+        if self._activation_mode != "projected":
+            self._activation_mode = "projected"
+            self._activation_reason = activation_reason
+            self.state.continuity_mode = "projected"
+            self.state.continuity_activation_reason = activation_reason
+            self.state.projection_events += 1
+            self._record_metric("continuity_activation_events", 1)
+            self._set_metric_text("continuity_activation_reason", activation_reason)
+        self._set_metric_text("continuity_mode", "projected")
 
         current_marker = None
         for index, item in enumerate(cleaned):
@@ -568,6 +661,8 @@ class ContinuousStateStore:
         capsule = self.render_capsule()
         self._set_metric("capsule_chars", len(capsule))
         self._set_metric("capsule_tokens", max(1, len(capsule) // 4))
+        self._set_metric("capsule_budget_tokens", _positive_int(self._continuity_config().get("capsule_token_budget"), 1_200))
+        self._record_metric("net_context_savings", omitted_tokens - max(1, len(capsule) // 4))
         self._set_metric("state_facts", len(self.state.important_facts))
         self._set_metric("state_constraints", len(self.state.active_constraints))
         self._set_metric("durable_tool_observations", len(self.state.durable_tool_observations))
@@ -579,12 +674,61 @@ class ContinuousStateStore:
         for item in projected:
             item.pop("_hermes_source_index", None)
             item.pop("_hermes_current_turn", None)
+            item.pop("_hermes_state_delta", None)
         self._record_metric("substrate_context_projections", 1)
         self.checkpoint("generic_turn")
         return projected
 
+    def _continuity_config(self) -> dict[str, Any]:
+        agent = getattr(self, "_agent", None)
+        configured = getattr(agent, "reasoning_continuity_config", None) if agent else None
+        return configured if isinstance(configured, dict) else {"mode": "always"}
+
+    def _should_project(
+        self,
+        api_messages: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        current_turn_user_idx: int | None,
+    ) -> tuple[bool, str]:
+        cfg = self._continuity_config()
+        mode = str(cfg.get("mode", "adaptive")).strip().lower()
+        if mode in {"always", "forced", "eager"}:
+            return True, "configured_always"
+        if self._activation_mode == "projected":
+            return True, "already_projected"
+        if self.state.compaction_count:
+            return True, "resume_checkpoint"
+        if self.state.task_epoch > 1 and self.state.turns > 1:
+            # A returned task has a durable trajectory worth restoring, while
+            # an ordinary short session remains collecting.
+            return True, "resumed_task_epoch"
+
+        transcript_tokens = sum(len(_text(item.get("content"))) for item in api_messages) // 4
+        message_limit = _positive_int(cfg.get("activation_message_count"), 24)
+        if len(messages) >= message_limit:
+            return True, "message_count_pressure"
+        tool_chars = sum(
+            len(_text(item.get("content")))
+            for item in messages
+            if item.get("role") == "tool"
+        )
+        if tool_chars >= _positive_int(cfg.get("activation_tool_chars"), 24_000):
+            return True, "tool_output_pressure"
+        context_length = getattr(
+            getattr(getattr(self, "_agent", None), "context_compressor", None),
+            "context_length",
+            0,
+        )
+        ratio = _positive_float(cfg.get("activation_context_ratio"), 0.72)
+        if isinstance(context_length, (int, float)) and context_length > 0:
+            if transcript_tokens >= int(context_length * ratio):
+                return True, "context_ratio_pressure"
+        if current_turn_user_idx is None and self.state.turns > 1:
+            return True, "resumed_without_turn_anchor"
+        return False, "below_activation_threshold"
+
     def render_capsule(self) -> str:
-        """Render a bounded, explicit working-state instruction."""
+        """Render a bounded capsule, prioritising operational state."""
 
         def block(title: str, values: Iterable[Any], limit: int = 8) -> str:
             rows = [str(value) for value in list(values)[-limit:] if value]
@@ -598,40 +742,46 @@ class ContinuousStateStore:
             f"{item.get('tool', 'tool')}: {item.get('observation', '')}"
             for item in self.state.durable_tool_observations[-6:]
         ]
-        return (
-            "<hermes-continuous-state schema_version=2>\n"
-            "This is the persistent working state for the active task. "
-            "Use it as operational memory; do not restart completed work or "
-            "discard constraints merely because older chat turns are omitted.\n"
-            f"Session context: {', '.join(self.state.session_context[-3:]) or 'none'}\n"
-            f"Task epoch: {self.state.task_epoch}; task id: {self.state.task_id or 'unknown'}\n"
+        cfg = self._continuity_config()
+        budget = _positive_int(cfg.get("capsule_token_budget"), 1_200)
+        limit = max(1_024, budget * 4)
+        header = (
+            "<hermes-continuous-state schema_version=3>\n"
+            "Persistent operational state for the active task. Use it to resume "
+            "work without rediscovering verified facts.\n"
+            f"Task epoch: {self.state.task_epoch}\n"
             f"Current task objective: {self.state.current_task_objective or self.state.objective or 'unknown'}\n"
-            f"Current user-turn objective: {self.state.current_user_turn_objective or self._turn_objective or 'unknown'}\n"
-            f"Current working state: {self.state.current_working_state or 'not yet observed'}\n"
-            + block("Current plan", self.state.current_plan)
-            + "\n"
-            + block("Important facts", self.state.important_facts)
-            + "\n"
-            + block("Decisions", self.state.decisions)
-            + "\n"
-            + block("Hypotheses", self.state.hypotheses)
-            + "\n"
-            + block("Unresolved questions", self.state.unresolved_questions)
-            + "\n"
-            + block("Recent tool observations", observations)
-            + "\n"
-            + block("Durable important tool observations", durable_observations)
-            + "\n"
-            + block("Artifacts/files", self.state.artifacts)
-            + "\n"
-            + block("Failures and retries", self.state.failures_and_retries)
-            + "\n"
-            + block("Active constraints", self.state.active_constraints)
-            + "\n"
-            + block("Completion criteria", self.state.completion_criteria)
-            + "\nWhen a transition creates a verified fact, decision, changed artifact, resolved question, or plan replacement, optionally append a small valid JSON state delta in <hermes-state-delta>...</hermes-state-delta>; never repeat the full capsule.\n"
+        )
+        sections = [
+            ("Active constraints", self.state.active_constraints),
+            ("Current plan", self.state.current_plan),
+            ("Current working state", [self.state.current_working_state]),
+            ("Important facts", self.state.important_facts),
+            ("Failures and retries", self.state.failures_and_retries),
+            ("Durable tool observations", durable_observations),
+            ("Artifacts/files", self.state.artifacts),
+            ("Completion criteria", self.state.completion_criteria),
+            ("Decisions", self.state.decisions),
+            ("Hypotheses", self.state.hypotheses),
+            ("Unresolved questions", self.state.unresolved_questions),
+        ]
+        result = header
+        for title, values in sections:
+            addition = "\n" + block(title, values)
+            if len(result) + len(addition) <= limit - 180:
+                result += addition
+            else:
+                remaining = limit - len(result) - 180
+                if remaining > 80:
+                    result += addition[:remaining] + " …[capsule budget]"
+                break
+        result += (
+            "\nWhen a transition creates a verified fact, decision, changed artifact, "
+            "resolved question, or plan replacement, optionally append a small valid "
+            "JSON delta in <hermes-state-delta>...</hermes-state-delta>.\n"
             "</hermes-continuous-state>"
         )
+        return result
 
     def checkpoint(self, reason: str) -> dict[str, Any]:
         self.state.checkpoint_count += 1
@@ -685,6 +835,9 @@ class ContinuousStateStore:
             "task_epoch": self.state.task_epoch,
             "task_event": self._last_task_event,
             "task_history": len(self.state.task_history),
+            "continuity_mode": self.state.continuity_mode,
+            "continuity_activation_reason": self.state.continuity_activation_reason,
+            "projection_events": self.state.projection_events,
             "turns": self.state.turns,
             "observed_messages": self.state.observed_messages,
             "tool_observations": len(self.state.tool_observations),
@@ -852,6 +1005,12 @@ class ContinuousStateStore:
             # A set-before-metrics value is kept as a one-item pending update.
             self._pending_metrics[key] = int(value)
 
+    def _set_metric_text(self, key: str, value: str) -> None:
+        agent = getattr(self, "_agent", None)
+        metrics = getattr(agent, "_reasoning_metrics", None) if agent else None
+        if metrics is not None and hasattr(metrics, key):
+            setattr(metrics, key, str(value))
+
     def flush_metrics(self) -> None:
         pending, self._pending_metrics = self._pending_metrics, {}
         for key, amount in pending.items():
@@ -906,6 +1065,22 @@ def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)[:160] or "session"
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def _extract_state_delta(content: str) -> dict[str, Any] | None:
     """Parse only the explicit, bounded state protocol; malformed output is ignored."""
 
@@ -937,3 +1112,11 @@ def _extract_state_delta(content: str) -> dict[str, Any] | None:
             continue
         result[key] = _bounded_values(value, 24)
     return result
+
+
+def strip_state_delta_markup(content: str) -> str:
+    """Remove internal state-delta blocks while preserving surrounding prose."""
+
+    if not isinstance(content, str):
+        return content
+    return _STATE_DELTA_RE.sub("", content).strip()

@@ -9,6 +9,15 @@ DEFAULT_CONFIG = {
     # Selects the reasoning-loop substrate while preserving Hermes' normal
     # tools, sessions, and UX.  `legacy` is the compatibility default.
     "reasoning_backend": "legacy",
+    # Tier-2 continuity stays collecting until context pressure justifies a
+    # projection. `always` is retained for substrate experiments.
+    "reasoning_continuity": {
+        "mode": "adaptive",
+        "capsule_token_budget": 1200,
+        "activation_context_ratio": 0.72,
+        "activation_message_count": 24,
+        "activation_tool_chars": 24000,
+    },
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},

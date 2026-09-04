@@ -1,0 +1,4 @@
+Evidence fragment 012
+Status: VERIFIED
+Observation: stage-1 completed with marker-112.
+This is supporting context, not one of the three required anchors. Keep the sequence and inspect the next fragment.

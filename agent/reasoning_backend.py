@@ -140,6 +140,7 @@ class ReasoningMetrics:
     continuous_state_bytes: int = 0
     capsule_chars: int = 0
     capsule_tokens: int = 0
+    capsule_budget_tokens: int = 0
     state_facts: int = 0
     state_constraints: int = 0
     durable_tool_observations: int = 0
@@ -153,6 +154,12 @@ class ReasoningMetrics:
     questions_resolved: int = 0
     state_compaction_events: int = 0
     legacy_transcript_tokens_omitted: int = 0
+    net_context_savings: int = 0
+    continuity_activation_events: int = 0
+    continuity_activation_reason: str = ""
+    continuity_mode: str = "none"
+    collecting_calls: int = 0
+    uncached_input_tokens: int = 0
 
     def finish(self, result: Any, agent: Any) -> None:
         self.duration_ms = max(0.0, (time.time() - self.started_at) * 1000.0)
@@ -216,6 +223,7 @@ class ReasoningMetrics:
             - int(baseline.get("cached_input_tokens", 0) or 0),
         )
         self.total_tokens = self.input_tokens + self.output_tokens
+        self.uncached_input_tokens = max(0, self.input_tokens - self.cached_input_tokens)
         cost = getattr(agent, "session_estimated_cost_usd", None)
         base_cost = baseline.get("cost")
         self.estimated_cost_usd = (
@@ -255,6 +263,7 @@ class ReasoningMetrics:
             "continuous_state_bytes": self.continuous_state_bytes,
             "capsule_chars": self.capsule_chars,
             "capsule_tokens": self.capsule_tokens,
+            "capsule_budget_tokens": self.capsule_budget_tokens,
             "state_facts": self.state_facts,
             "state_constraints": self.state_constraints,
             "durable_tool_observations": self.durable_tool_observations,
@@ -268,6 +277,12 @@ class ReasoningMetrics:
             "questions_resolved": self.questions_resolved,
             "state_compaction_events": self.state_compaction_events,
             "legacy_transcript_tokens_omitted": self.legacy_transcript_tokens_omitted,
+            "net_context_savings": self.net_context_savings,
+            "continuity_activation_events": self.continuity_activation_events,
+            "continuity_activation_reason": self.continuity_activation_reason,
+            "continuity_mode": self.continuity_mode,
+            "collecting_calls": self.collecting_calls,
+            "uncached_input_tokens": self.uncached_input_tokens,
         }
 
 
@@ -413,7 +428,13 @@ class ArcContinuousReasoningBackend(ReasoningBackend):
         )
         agent._continuous_state_store = manager
         previous_hook = getattr(agent, "_reasoning_backend_prepare_context", None)
+        previous_sanitizer = getattr(agent, "_reasoning_backend_sanitize_output", None)
+        previous_stream_sanitizer = getattr(
+            agent, "_reasoning_backend_sanitize_stream_delta", None
+        )
         agent._reasoning_backend_prepare_context = manager.prepare_api_messages
+        agent._reasoning_backend_sanitize_output = manager.sanitize_assistant_message
+        agent._reasoning_backend_sanitize_stream_delta = manager.sanitize_stream_delta
         try:
             manager.flush_metrics()
             result = super().run(agent, runner, *args, **kwargs)
@@ -421,6 +442,12 @@ class ArcContinuousReasoningBackend(ReasoningBackend):
                 result_messages = result.get("messages") or []
                 manager.observe_messages(result_messages)
                 manager.checkpoint("turn_complete")
+                if isinstance(result.get("final_response"), str):
+                    from agent.continuous_state import strip_state_delta_markup
+
+                    result["final_response"] = strip_state_delta_markup(
+                        result["final_response"]
+                    )
                 result["reasoning_state"] = manager.summary()
                 result["reasoning_continuity"] = (
                     "provider_native"
@@ -437,6 +464,20 @@ class ArcContinuousReasoningBackend(ReasoningBackend):
                     pass
             else:
                 agent._reasoning_backend_prepare_context = previous_hook
+            if previous_sanitizer is None:
+                try:
+                    delattr(agent, "_reasoning_backend_sanitize_output")
+                except AttributeError:
+                    pass
+            else:
+                agent._reasoning_backend_sanitize_output = previous_sanitizer
+            if previous_stream_sanitizer is None:
+                try:
+                    delattr(agent, "_reasoning_backend_sanitize_stream_delta")
+                except AttributeError:
+                    pass
+            else:
+                agent._reasoning_backend_sanitize_stream_delta = previous_stream_sanitizer
             agent._reasoning_native_tier = 0
 
 

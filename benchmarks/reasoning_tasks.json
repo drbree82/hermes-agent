@@ -28,6 +28,12 @@
       "category": "failure_recovery",
       "fixture": "tests/fixtures/reasoning_benchmarks/failure_recovery",
       "prompt": "Complete the maintenance task described in TASK.md. One referenced artifact is intentionally missing, so begin by investigating the failure, recover using the repository evidence, and then produce the requested report. Preserve your earlier findings after the failed action and verify the final report."
+    },
+    {
+      "id": "long_context_distributed_evidence",
+      "category": "long_context",
+      "fixture": "tests/fixtures/reasoning_benchmarks/long_context_evidence",
+      "prompt": "Complete TASK.md. This is a context-pressure investigation: inspect every evidence fragment in batches, record verified findings, and write LONG_REPORT.md. The final report must combine the critical early, middle, and late facts; do not infer facts from filenames or skip fragments. Re-read and mechanically verify the report before finishing."
     }
   ]
 }

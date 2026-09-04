@@ -1819,6 +1819,11 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    _continuity_cfg = _agent_cfg.get("reasoning_continuity", {})
+    agent.reasoning_continuity_config = (
+        dict(_continuity_cfg) if isinstance(_continuity_cfg, dict) else {}
+    )
+
     # Codex commentary visibility (display.show_commentary, default true).
     # When true, completed Codex phase=commentary messages are delivered as
     # visible mid-turn updates through the interim message path. When false,

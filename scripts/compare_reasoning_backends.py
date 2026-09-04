@@ -101,6 +101,18 @@ def _validate_artifact(task_id: str | None, workspace: Path) -> dict[str, object
             "path": str(artifact),
             "chars": len(text),
         }
+    if task_id == "long_context_distributed_evidence":
+        artifact = workspace / "LONG_REPORT.md"
+        text = artifact.read_text(encoding="utf-8") if artifact.exists() else ""
+        required = ("ANCHOR=ORBIT-7", "CONTROL=MIDDLE-42", "CHECKSUM=LATE-91")
+        listed = sum(1 for index in range(1, 51) if f"{index:03d}.txt" in text)
+        return {
+            "kind": "distributed_evidence_check",
+            "passed": bool(text.strip()) and all(term in text for term in required) and listed >= 40,
+            "path": str(artifact),
+            "chars": len(text),
+            "evidence_files_listed": listed,
+        }
     return None
 
 
@@ -131,6 +143,10 @@ def main() -> int:
         "--backends", nargs="+", choices=("legacy", "arc_continuous"),
         default=("legacy", "arc_continuous"),
         help="Backends to run (defaults to the complete A/B pair)",
+    )
+    parser.add_argument(
+        "--continuity-mode", choices=("adaptive", "always"), default=None,
+        help="Override Tier-2 mode for arc_continuous (use always for eager A/B)",
     )
     parser.add_argument(
         "--output",
@@ -193,6 +209,15 @@ def main() -> int:
                 config_text = config_text.replace(
                     "  cwd: ~/", f"  cwd: {run_workdir}", 1
                 )
+                if args.continuity_mode == "always":
+                    config_text += (
+                        "\nreasoning_continuity:\n"
+                        "  mode: always\n"
+                        "  capsule_token_budget: 1200\n"
+                        "  activation_context_ratio: 0.72\n"
+                        "  activation_message_count: 24\n"
+                        "  activation_tool_chars: 24000\n"
+                    )
                 config_path.write_text(config_text, encoding="utf-8")
             command = [
                 sys.executable,

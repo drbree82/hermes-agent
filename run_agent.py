@@ -7554,6 +7554,14 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = sanitize_context(text)
+            state_stream_sanitizer = getattr(
+                self, "_reasoning_backend_sanitize_stream_delta", None
+            )
+            if callable(state_stream_sanitizer):
+                try:
+                    text = state_stream_sanitizer(text)
+                except Exception:
+                    pass
             # Only strip leading newlines on the first delta. Mid-stream
             # newlines are legitimate markdown. Look at the parts list, not
             # the joined property: joining on every token would copy the
@@ -8399,7 +8407,16 @@ class AIAgent:
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_assistant_message``."""
         from agent.chat_completion_helpers import build_assistant_message
-        return build_assistant_message(self, assistant_message, finish_reason)
+        result = build_assistant_message(self, assistant_message, finish_reason)
+        sanitizer = getattr(self, "_reasoning_backend_sanitize_output", None)
+        if callable(sanitizer):
+            try:
+                result = sanitizer(result)
+            except Exception:
+                # State protocol hygiene is auxiliary; never break a normal
+                # Hermes response because an experimental sanitizer failed.
+                pass
+        return result
 
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
