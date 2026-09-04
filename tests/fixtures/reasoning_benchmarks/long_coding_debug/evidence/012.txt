@@ -1,0 +1,4 @@
+ID=012
+STATUS=VERIFIED
+The final diagnosis combines the stable input contract, cursor-reset regression,
+and empty-batch failure into one repair rationale.

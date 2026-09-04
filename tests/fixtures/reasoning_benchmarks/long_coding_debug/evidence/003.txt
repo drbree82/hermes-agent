@@ -1,0 +1,4 @@
+ID=003
+STATUS=VERIFIED
+The first implementation note says cursor state was introduced during a refactor.
+Check the current source before treating the note as the complete root cause.

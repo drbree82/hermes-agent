@@ -1,0 +1,4 @@
+ID=007
+STATUS=HYPOTHESIS
+The bug might instead be caused by result aliasing. This note is not verified.
+Discard it if the source and failing test contradict it.

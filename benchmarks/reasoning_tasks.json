@@ -33,7 +33,19 @@
       "id": "long_context_distributed_evidence",
       "category": "long_context",
       "fixture": "tests/fixtures/reasoning_benchmarks/long_context_evidence",
-      "prompt": "Complete TASK.md. This is a context-pressure investigation: inspect every evidence fragment in batches, record verified findings, and write LONG_REPORT.md. The final report must combine the critical early, middle, and late facts; do not infer facts from filenames or skip fragments. Re-read and mechanically verify the report before finishing."
+      "prompt": "Complete TASK.md. This is a context-pressure investigation: inspect every evidence fragment in batches, record verified findings in the required INSPECTION_LEDGER.json, and write LONG_REPORT.md. The final report must combine the critical early, middle, and late facts; do not infer facts from filenames or skip fragments. Re-read and mechanically verify both artifacts before finishing."
+    },
+    {
+      "id": "long_coding_debug",
+      "category": "long_coding",
+      "fixture": "tests/fixtures/reasoning_benchmarks/long_coding_debug",
+      "prompt": "Complete TASK.md. Inspect every numbered evidence item in batches, repair the repository, run all tests, and write the required REPAIR_TRACE.md. The repair must be mechanically validated and the report must list every inspected evidence ID."
+    },
+    {
+      "id": "long_operational_incident",
+      "category": "long_operations",
+      "fixture": "tests/fixtures/reasoning_benchmarks/long_operational_incident",
+      "prompt": "Complete TASK.md. Inspect every numbered incident log and the configuration, reconstruct the full timeline, reject unsupported hypotheses, and write the required INCIDENT_REPORT.md. Re-read the report before finishing."
     }
   ]
 }

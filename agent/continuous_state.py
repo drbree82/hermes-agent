@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-CONTINUOUS_STATE_SCHEMA_VERSION = 3
+CONTINUOUS_STATE_SCHEMA_VERSION = 4
 _MAX_RECENT_OBSERVATIONS = 18
 _MAX_FACTS = 24
 _MAX_DECISIONS = 18
@@ -34,6 +34,7 @@ _MAX_EVENT_KEYS = 256
 _MAX_EXCERPT_CHARS = 4_000
 _MAX_STATE_VALUE_CHARS = 1_200
 _MAX_TASK_HISTORY = 8
+_MAX_CONTINUITY_TRACE = 64
 _PATH_RE = re.compile(r"(?:^|[\s'\"`(])((?:/|\./|\.\./|[A-Za-z]:[\\/])[^\s'\"`,;)]+)")
 _STATE_DELTA_RE = re.compile(
     r"<hermes-state-delta>\s*(\{.*?\})\s*</hermes-state-delta>", re.DOTALL
@@ -158,6 +159,9 @@ class ContinuousState:
     continuity_activation_reason: str = ""
     projection_events: int = 0
     last_compacted_observed_messages: int = 0
+    last_compacted_tool_chars: int = 0
+    last_compacted_task_epoch: int = 0
+    continuity_trace: list[dict[str, Any]] = field(default_factory=list)
     current_plan: list[str] = field(default_factory=list)
     current_working_state: str = ""
     important_facts: list[str] = field(default_factory=list)
@@ -182,7 +186,7 @@ class ContinuousState:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any], *, state_id: str) -> "ContinuousState":
         version = value.get("schema_version", 0)
-        if version not in (1, 2, CONTINUOUS_STATE_SCHEMA_VERSION):
+        if version not in (1, 2, 3, CONTINUOUS_STATE_SCHEMA_VERSION):
             raise ValueError(
                 f"Unsupported continuous state schema_version={version!r}; "
                 f"expected {CONTINUOUS_STATE_SCHEMA_VERSION}."
@@ -217,6 +221,7 @@ class ContinuousState:
             "compacted_trajectory",
             "checkpoints",
             "event_keys",
+            "continuity_trace",
         ):
             value = getattr(self, name)
             if not isinstance(value, list):
@@ -242,6 +247,27 @@ class ContinuousState:
         self.continuity_mode = self.continuity_mode if self.continuity_mode in {"collecting", "projected", "provider_native"} else "collecting"
         self.continuity_activation_reason = _state_text(self.continuity_activation_reason, 200)
         self.event_keys = [str(item) for item in self.event_keys][- _MAX_EVENT_KEYS :]
+        self.continuity_trace = [
+            item for item in self.continuity_trace if isinstance(item, dict)
+        ][-_MAX_CONTINUITY_TRACE:]
+        for item in self.continuity_trace:
+            for key in (
+                "event", "reason", "mode", "activation_reason", "task_event"
+            ):
+                if key in item:
+                    item[key] = _state_text(item[key], 160)
+            for key in (
+                "messages", "messages_before", "messages_after", "raw_chars",
+                "raw_chars_before", "transcript_tokens", "projected_tokens",
+                "capsule_tokens", "omitted_tokens", "net_context_savings",
+                "tool_chars", "new_messages", "new_tool_chars", "compaction_count",
+                "facts", "constraints", "durable_observations", "tail_messages_dropped",
+            ):
+                if key in item:
+                    try:
+                        item[key] = max(0, int(item[key]))
+                    except (TypeError, ValueError):
+                        item[key] = 0
         self.tool_observations = [
             item for item in self.tool_observations if isinstance(item, dict)
         ][- _MAX_RECENT_OBSERVATIONS :]
@@ -511,16 +537,42 @@ class ContinuousStateStore:
     def maybe_compact(self, *, raw_messages: Iterable[Mapping[str, Any]], reason: str) -> bool:
         messages = list(raw_messages)
         raw_chars = sum(len(_text(message.get("content"))) for message in messages)
+        tool_chars = sum(
+            len(_text(message.get("content")))
+            for message in messages
+            if message.get("role") == "tool"
+        )
+        config = self._continuity_config()
         pressure = (
             len(messages) >= _positive_int(
-                self._continuity_config().get("trajectory_message_threshold"), 28
+                config.get("trajectory_message_threshold"), 28
             )
             or len(self.state.tool_observations) > _MAX_RECENT_OBSERVATIONS
             or raw_chars >= _positive_int(
-                self._continuity_config().get("trajectory_chars_threshold"), 80_000
+                config.get("trajectory_chars_threshold"), 80_000
             )
         )
         if not pressure:
+            return False
+        new_messages = max(
+            0, self.state.observed_messages - self.state.last_compacted_observed_messages
+        )
+        new_tool_chars = max(0, tool_chars - self.state.last_compacted_tool_chars)
+        if self.state.compaction_count and (
+            new_messages < _positive_int(
+                config.get("trajectory_compaction_min_new_messages"), 8
+            )
+            and new_tool_chars < _positive_int(
+                config.get("trajectory_compaction_min_new_tool_chars"), 12_000
+            )
+        ):
+            self._record_metric("compaction_suppressed_events", 1)
+            self._record_continuity_event(
+                "compaction_suppressed",
+                reason="hysteresis_cooldown",
+                messages=len(messages), raw_chars=raw_chars, tool_chars=tool_chars,
+                new_messages=new_messages, new_tool_chars=new_tool_chars,
+            )
             return False
         if self.state.observed_messages <= self.state.last_compacted_observed_messages:
             return False
@@ -555,11 +607,23 @@ class ContinuousStateStore:
                 "durable_observations_retained": len(
                     self.state.durable_tool_observations
                 ),
+                "new_messages": new_messages,
+                "new_tool_chars": new_tool_chars,
             }
         )
         self.state.compacted_trajectory = self.state.compacted_trajectory[-_MAX_TRAJECTORY_COMPACTIONS:]
         self.state.compaction_count += 1
         self.state.last_compacted_observed_messages = self.state.observed_messages
+        self.state.last_compacted_tool_chars = tool_chars
+        self.state.last_compacted_task_epoch = self.state.task_epoch
+        self._record_continuity_event(
+            "compaction", reason=reason, messages_before=len(messages),
+            raw_chars_before=raw_chars, tool_chars=tool_chars,
+            new_messages=new_messages, new_tool_chars=new_tool_chars,
+            facts=len(self.state.important_facts),
+            constraints=len(self.state.active_constraints),
+            durable_observations=len(self.state.durable_tool_observations),
+        )
         self._record_metric("trajectory_compactions", 1)
         self._record_metric("state_compaction_events", 1)
         self.checkpoint("trajectory_compaction")
@@ -678,6 +742,20 @@ class ContinuousStateStore:
         self._set_metric("state_constraints", len(self.state.active_constraints))
         self._set_metric("durable_tool_observations", len(self.state.durable_tool_observations))
         self._set_metric("continuous_state_bytes", len(json.dumps(self.state.to_dict(), ensure_ascii=False)))
+        self._record_continuity_event(
+            "projection", reason=activation_reason, mode="projected",
+            messages=len(cleaned), messages_after=len(projected),
+            raw_chars=sum(len(_text(item.get("content"))) for item in cleaned),
+            transcript_tokens=sum(len(_text(item.get("content"))) for item in cleaned) // 4,
+            projected_tokens=sum(len(_text(item.get("content"))) for item in projected) // 4,
+            capsule_tokens=max(1, len(capsule) // 4), omitted_tokens=omitted_tokens,
+            net_context_savings=omitted_tokens - max(1, len(capsule) // 4),
+            tool_chars=sum(len(_text(item.get("content"))) for item in messages if item.get("role") == "tool"),
+            facts=len(self.state.important_facts),
+            constraints=len(self.state.active_constraints),
+            durable_observations=len(self.state.durable_tool_observations),
+            compaction_count=self.state.compaction_count,
+        )
         for item in projected:
             if item.get("role") == "user":
                 item["content"] = _append_text(item.get("content"), capsule)
@@ -734,7 +812,9 @@ class ContinuousStateStore:
             return True, "configured_always"
         if self._activation_mode == "projected":
             return True, "already_projected"
-        if self.state.compaction_count:
+        if self.state.compaction_count and (
+            self.state.last_compacted_task_epoch == self.state.task_epoch
+        ):
             return True, "resume_checkpoint"
         if self.state.task_epoch > 1 and self.state.turns > 1:
             # A returned task has a durable trajectory worth restoring, while
@@ -742,16 +822,31 @@ class ContinuousStateStore:
             return True, "resumed_task_epoch"
 
         transcript_tokens = sum(len(_text(item.get("content"))) for item in api_messages) // 4
+        removable_tokens = self._estimated_removable_tokens(
+            api_messages, messages, current_turn_user_idx
+        )
+        capsule_budget = _positive_int(cfg.get("capsule_token_budget"), 1_200)
+        minimum_saving = _positive_int(cfg.get("minimum_projection_saving_tokens"), 400)
+
+        def worthwhile(reason: str) -> tuple[bool, str]:
+            if removable_tokens >= capsule_budget + minimum_saving:
+                return True, reason
+            self._record_continuity_event(
+                "activation_suppressed", reason="insufficient_net_benefit",
+                activation_reason=reason, transcript_tokens=transcript_tokens,
+                omitted_tokens=removable_tokens, capsule_tokens=capsule_budget,
+            )
+            return False, "insufficient_net_benefit"
         message_limit = _positive_int(cfg.get("activation_message_count"), 24)
         if len(messages) >= message_limit:
-            return True, "message_count_pressure"
+            return worthwhile("message_count_pressure")
         tool_chars = sum(
             len(_text(item.get("content")))
             for item in messages
             if item.get("role") == "tool"
         )
         if tool_chars >= _positive_int(cfg.get("activation_tool_chars"), 24_000):
-            return True, "tool_output_pressure"
+            return worthwhile("tool_output_pressure")
         context_length = getattr(
             getattr(getattr(self, "_agent", None), "context_compressor", None),
             "context_length",
@@ -760,10 +855,45 @@ class ContinuousStateStore:
         ratio = _positive_float(cfg.get("activation_context_ratio"), 0.72)
         if isinstance(context_length, (int, float)) and context_length > 0:
             if transcript_tokens >= int(context_length * ratio):
-                return True, "context_ratio_pressure"
+                return worthwhile("context_ratio_pressure")
         if current_turn_user_idx is None and self.state.turns > 1:
             return True, "resumed_without_turn_anchor"
         return False, "below_activation_threshold"
+
+    def _estimated_removable_tokens(
+        self,
+        api_messages: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        current_turn_user_idx: int | None,
+    ) -> int:
+        """Estimate history that a projection can remove, without serialising it."""
+
+        marker = next(
+            (index for index, item in enumerate(api_messages)
+             if item.get("_hermes_current_turn")),
+            None,
+        )
+        if marker is None and current_turn_user_idx is not None:
+            marker = next(
+                (index for index, item in enumerate(api_messages)
+                 if item.get("_hermes_source_index") == current_turn_user_idx),
+                None,
+            )
+        if marker is None:
+            marker = next(
+                (index for index, item in enumerate(api_messages)
+                 if item.get("role") == "user"),
+                0,
+            )
+        prior = api_messages[1:marker] if marker > 0 else []
+        removable = sum(len(_text(item.get("content"))) for item in prior) // 4
+        if not prior and self.state.compaction_count and len(messages) > 9:
+            # On a resumed/compacting active turn, the tail projection can
+            # remove old assistant/tool pairs even when there are no prior turns.
+            removable += sum(
+                len(_text(item.get("content"))) for item in messages[1:-8]
+            ) // 4
+        return max(0, removable)
 
     def render_capsule(self) -> str:
         """Render a bounded capsule, prioritising operational state."""
@@ -784,7 +914,7 @@ class ContinuousStateStore:
         budget = _positive_int(cfg.get("capsule_token_budget"), 1_200)
         limit = max(1_024, budget * 4)
         header = (
-            "<hermes-continuous-state schema_version=3>\n"
+            f"<hermes-continuous-state schema_version={CONTINUOUS_STATE_SCHEMA_VERSION}>\n"
             "Persistent operational state for the active task. Use it to resume "
             "work without rediscovering verified facts.\n"
             f"Task epoch: {self.state.task_epoch}\n"
@@ -888,6 +1018,7 @@ class ContinuousStateStore:
             "active_constraints": len(self.state.active_constraints),
             "compaction_count": self.state.compaction_count,
             "checkpoint_count": self.state.checkpoint_count,
+            "continuity_trace": list(self.state.continuity_trace[-24:]),
             "last_checkpoint": self.state.checkpoints[-1] if self.state.checkpoints else None,
             # Keep the original public strategy label stable for callers of
             # the first implementation; expose the actual tier separately.
@@ -1037,6 +1168,16 @@ class ContinuousStateStore:
             setattr(metrics, key, int(getattr(metrics, key, 0) or 0) + amount)
         else:
             self._pending_metrics[key] = self._pending_metrics.get(key, 0) + amount
+
+    def _record_continuity_event(self, event: str, **values: Any) -> None:
+        payload: dict[str, Any] = {"event": event, "at": time.time()}
+        for key, value in values.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                payload[key] = max(0, int(value))
+            elif isinstance(value, str):
+                payload[key] = _state_text(value, 160)
+        self.state.continuity_trace.append(payload)
+        self.state.continuity_trace = self.state.continuity_trace[-_MAX_CONTINUITY_TRACE:]
 
     def _set_metric(self, key: str, value: int) -> None:
         agent = getattr(self, "_agent", None)

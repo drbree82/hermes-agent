@@ -1,0 +1,4 @@
+ID=009
+STATUS=VERIFIED
+An empty batch must not make a later non-empty batch lose its first item.
+This is the late-stage recovery scenario for the investigation.

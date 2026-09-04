@@ -26,6 +26,10 @@ def main() -> int:
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--continuity-mode", choices=("adaptive", "always"))
     parser.add_argument("--trajectory-message-threshold", type=int)
+    parser.add_argument("--activation-message-threshold", type=int)
+    parser.add_argument("--activation-tool-chars", type=int)
+    parser.add_argument("--activation-context-ratio", type=float)
+    parser.add_argument("--capsule-token-budget", type=int)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -71,6 +75,14 @@ def main() -> int:
                 command.extend(["--continuity-mode", args.continuity_mode])
             if args.trajectory_message_threshold is not None:
                 command.extend(["--trajectory-message-threshold", str(args.trajectory_message_threshold)])
+            if args.activation_message_threshold is not None:
+                command.extend(["--activation-message-threshold", str(args.activation_message_threshold)])
+            if args.activation_tool_chars is not None:
+                command.extend(["--activation-tool-chars", str(args.activation_tool_chars)])
+            if args.activation_context_ratio is not None:
+                command.extend(["--activation-context-ratio", str(args.activation_context_ratio)])
+            if args.capsule_token_budget is not None:
+                command.extend(["--capsule-token-budget", str(args.capsule_token_budget)])
             completed = subprocess.run(command, cwd=root, check=False)
             if completed.returncode != 0:
                 failures += 1

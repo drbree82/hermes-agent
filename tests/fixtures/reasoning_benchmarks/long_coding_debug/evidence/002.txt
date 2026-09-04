@@ -1,0 +1,4 @@
+ID=002
+STATUS=VERIFIED
+The result must preserve item order across all input batches.
+This is a contract fact, not an implementation suggestion.

@@ -1,0 +1,4 @@
+ID=006
+STATUS=VERIFIED
+A regression test should include a second batch with fewer items than the first.
+That case exposes accidental reuse of a prior batch offset.

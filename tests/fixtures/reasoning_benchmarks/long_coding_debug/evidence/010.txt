@@ -1,0 +1,4 @@
+ID=010
+STATUS=VERIFIED
+The late failure is named LATE_FAILURE=empty-batch.
+It is a test requirement and must be demonstrated mechanically.

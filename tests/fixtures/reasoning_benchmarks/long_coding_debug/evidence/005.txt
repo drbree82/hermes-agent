@@ -1,0 +1,4 @@
+ID=005
+STATUS=VERIFIED
+The middle review identifies the regression label REGRESSION=cursor-reset.
+Do not confuse this label with the desired patch itself.

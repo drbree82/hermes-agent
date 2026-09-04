@@ -1,0 +1,4 @@
+ID=008
+STATUS=VERIFIED
+The smallest correct repair resets the position for each independent batch.
+The full test suite, including empty batches, is required after the edit.

@@ -9,8 +9,10 @@ credentials/services.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -105,13 +107,117 @@ def _validate_artifact(task_id: str | None, workspace: Path) -> dict[str, object
         artifact = workspace / "LONG_REPORT.md"
         text = artifact.read_text(encoding="utf-8") if artifact.exists() else ""
         required = ("ANCHOR=ORBIT-7", "CONTROL=MIDDLE-42", "CHECKSUM=LATE-91")
-        listed = sum(1 for index in range(1, 51) if f"{index:03d}.txt" in text)
+        ledger_path = workspace / "INSPECTION_LEDGER.json"
+        ledger: object = None
+        ledger_error = ""
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            ledger_error = str(exc)
+        entries = ledger if isinstance(ledger, list) else []
+        by_id = {
+            str(entry.get("id")): entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("id") is not None
+        }
+        evidence_dir = workspace / "evidence"
+        expected_ids = {f"{index:03d}" for index in range(1, 51)}
+        unverified_ids = {f"{index:03d}" for index in range(7, 50, 7)}
+        ledger_valid = len(entries) == 50 and set(by_id) == expected_ids
+        hash_valid = True
+        status_valid = True
+        for evidence_id in expected_ids:
+            evidence_path = evidence_dir / f"{evidence_id}.txt"
+            entry = by_id.get(evidence_id, {})
+            try:
+                digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+            except OSError:
+                digest = ""
+            hash_valid = hash_valid and entry.get("sha256") == digest
+            expected_status = "UNVERIFIED" if evidence_id in unverified_ids else "VERIFIED"
+            status_valid = status_valid and entry.get("status") == expected_status
+        anchor_facts = all(term in text for term in required)
+        distractors_not_verified = True
+        for evidence_id in unverified_ids:
+            for line in text.splitlines():
+                if not re.search(rf"\b{evidence_id}(?:\.txt)?\b", line, re.IGNORECASE):
+                    continue
+                lower = line.lower()
+                explicitly_rejected = (
+                    "unverified" in lower or "not verified" in lower
+                    or "unsupported" in lower or "distractor" in lower
+                )
+                specific_status_line = bool(re.search(
+                    rf"(?:id|evidence|fragment|file)?\s*{evidence_id}(?:\.txt)?\s*(?:is|:|[-(])",
+                    lower,
+                ))
+                positive_claim = bool(
+                    re.search(r"\bverified\b|\bconfirmed\b|\bfact\b", lower)
+                )
+                if specific_status_line and positive_claim and not explicitly_rejected:
+                    distractors_not_verified = False
+        synthesis = all(
+            token in text.lower()
+            for token in ("orbit-7", "middle-42", "late-91", "combined")
+        )
         return {
             "kind": "distributed_evidence_check",
-            "passed": bool(text.strip()) and all(term in text for term in required),
+            "passed": (
+                bool(text.strip()) and anchor_facts and synthesis
+                and ledger_valid and hash_valid and status_valid
+                and distractors_not_verified
+            ),
             "path": str(artifact),
             "chars": len(text),
-            "evidence_files_listed": listed,
+            "ledger_path": str(ledger_path),
+            "ledger_entries": len(entries),
+            "ledger_valid": ledger_valid,
+            "ledger_hashes_valid": hash_valid,
+            "ledger_statuses_valid": status_valid,
+            "distractors_not_verified": distractors_not_verified,
+            "synthesis_present": synthesis,
+            "ledger_error": ledger_error,
+        }
+    if task_id == "long_coding_debug":
+        report = workspace / "REPAIR_TRACE.md"
+        text = report.read_text(encoding="utf-8") if report.exists() else ""
+        required_ids = all(f"{index:03d}" in text for index in range(1, 13))
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=workspace, capture_output=True, text=True, timeout=30, check=False,
+        )
+        return {
+            "kind": "coding_trace_check",
+            "passed": (
+                completed.returncode == 0 and required_ids
+                and all(term in text for term in (
+                    "INPUT_CONTRACT=stable-v2", "REGRESSION=cursor-reset",
+                    "LATE_FAILURE=empty-batch",
+                ))
+            ),
+            "pytest_passed": completed.returncode == 0,
+            "evidence_ids_listed": sum(1 for index in range(1, 13) if f"{index:03d}" in text),
+            "path": str(report),
+        }
+    if task_id == "long_operational_incident":
+        report = workspace / "INCIDENT_REPORT.md"
+        text = report.read_text(encoding="utf-8") if report.exists() else ""
+        required_ids = all(f"{index:03d}" in text for index in range(1, 13))
+        unverified_rejected = "007" not in text or not re.search(
+            r"007[^\n]*(?:fact|verified|confirmed)", text, re.IGNORECASE
+        )
+        return {
+            "kind": "incident_trace_check",
+            "passed": (
+                bool(text.strip()) and required_ids and unverified_rejected
+                and all(term in text for term in (
+                    "ROOT_CAUSE=stale-route", "MITIGATION=reload-after-route-fix",
+                    "RECOVERY=healthcheck-green",
+                ))
+            ),
+            "evidence_ids_listed": sum(1 for index in range(1, 13) if f"{index:03d}" in text),
+            "unverified_rejected": unverified_rejected,
+            "path": str(report),
         }
     return None
 
@@ -149,6 +255,10 @@ def main() -> int:
         help="Override Tier-2 mode for arc_continuous (use always for eager A/B)",
     )
     parser.add_argument("--trajectory-message-threshold", type=int, default=None)
+    parser.add_argument("--activation-message-threshold", type=int, default=None)
+    parser.add_argument("--activation-tool-chars", type=int, default=None)
+    parser.add_argument("--activation-context-ratio", type=float, default=None)
+    parser.add_argument("--capsule-token-budget", type=int, default=None)
     parser.add_argument(
         "--output",
         type=Path,
@@ -210,21 +320,38 @@ def main() -> int:
                 config_text = config_text.replace(
                     "  cwd: ~/", f"  cwd: {run_workdir}", 1
                 )
+                continuity_overrides = []
                 if args.continuity_mode == "always":
+                    continuity_overrides.extend([
+                        "  mode: always",
+                        "  capsule_token_budget: 1200",
+                        "  activation_context_ratio: 0.72",
+                        "  activation_message_count: 24",
+                        "  activation_tool_chars: 24000",
+                        "  active_turn_tail_messages: 8",
+                    ])
+                if args.continuity_mode == "adaptive":
+                    continuity_overrides.append("  mode: adaptive")
+                if args.activation_message_threshold is not None:
+                    continuity_overrides.append(f"  activation_message_count: {args.activation_message_threshold}")
+                if args.activation_tool_chars is not None:
+                    continuity_overrides.append(f"  activation_tool_chars: {args.activation_tool_chars}")
+                if args.activation_context_ratio is not None:
+                    continuity_overrides.append(f"  activation_context_ratio: {args.activation_context_ratio}")
+                if args.capsule_token_budget is not None:
+                    continuity_overrides.append(f"  capsule_token_budget: {args.capsule_token_budget}")
+                if continuity_overrides:
                     config_text += (
                         "\nreasoning_continuity:\n"
-                        "  mode: always\n"
-                        "  capsule_token_budget: 1200\n"
-                        "  activation_context_ratio: 0.72\n"
-                        "  activation_message_count: 24\n"
-                        "  activation_tool_chars: 24000\n"
-                        "  active_turn_tail_messages: 8\n"
+                        + "\n".join(continuity_overrides) + "\n"
                     )
                 if args.trajectory_message_threshold is not None:
                     config_text += (
                         "\nreasoning_continuity:\n"
                         f"  mode: {args.continuity_mode or 'adaptive'}\n"
                         f"  trajectory_message_threshold: {args.trajectory_message_threshold}\n"
+                        f"  trajectory_compaction_min_new_messages: 8\n"
+                        f"  trajectory_compaction_min_new_tool_chars: 12000\n"
                         "  active_turn_tail_messages: 8\n"
                     )
                 config_path.write_text(config_text, encoding="utf-8")

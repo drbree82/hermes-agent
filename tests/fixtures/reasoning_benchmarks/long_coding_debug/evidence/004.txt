@@ -1,0 +1,4 @@
+ID=004
+STATUS=VERIFIED
+The regression is associated with carrying a per-batch position into the next batch.
+The source and tests must agree before this is recorded as verified.

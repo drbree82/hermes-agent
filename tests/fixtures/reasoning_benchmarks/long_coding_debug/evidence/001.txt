@@ -1,0 +1,4 @@
+ID=001
+STATUS=VERIFIED
+INPUT_CONTRACT=stable-v2
+The public processor accepts ordered batches and starts each batch at offset zero.

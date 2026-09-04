@@ -159,7 +159,7 @@ def test_substrate_projects_active_turn_and_persists_working_state(tmp_path):
 
     assert len(projected) == 4  # system + active user turn and its two follow-ups
     assert not any("earlier unrelated" in str(item) for item in projected)
-    assert "<hermes-continuous-state schema_version=3>" in projected[1]["content"]
+    assert "<hermes-continuous-state schema_version=" in projected[1]["content"]
     assert store.state.current_plan == ["Inspect the failing test", "Apply the smallest fix"]
     assert store.state.failures_and_retries
     assert (tmp_path / "state.json").exists()
@@ -282,10 +282,10 @@ def test_adaptive_tier_two_collects_then_projects_under_pressure(tmp_path):
     assert store.state.continuity_mode == "collecting"
 
     messages = [base[1]]
-    for index in range(8):
+    for index in range(16):
         messages.extend([
-            {"role": "assistant", "content": f"inspect step {index}"},
-            {"role": "tool", "name": "terminal", "content": f"verified result {index} /tmp/{index}.txt"},
+            {"role": "assistant", "content": f"inspect step {index} and preserve the operational finding for later verification"},
+            {"role": "tool", "name": "terminal", "content": f"verified result {index} /tmp/{index}.txt with an important retained diagnostic observation"},
         ])
     pressured = [
         {"role": "system", "content": "stable Hermes instructions"},
@@ -356,6 +356,63 @@ def test_trajectory_compaction_deduplicates_redundant_observations(tmp_path):
     assert store.state.compaction_count == 1
     assert len(store.state.tool_observations) == 1
     assert store.state.compacted_trajectory[-1]["reason"] == "test_pressure"
+
+
+def test_trajectory_compaction_has_hysteresis_after_first_compaction(tmp_path):
+    agent = SimpleNamespace(
+        _reasoning_native_tier=2,
+        _reasoning_metrics=None,
+        reasoning_continuity_config={
+            "trajectory_message_threshold": 8,
+            "trajectory_compaction_min_new_messages": 6,
+            "trajectory_compaction_min_new_tool_chars": 1000,
+        },
+    )
+    store = ContinuousStateStore(state_id="hysteresis", path=tmp_path / "state.json")
+    store._agent = agent
+    store.begin_turn("Investigate the service failure.")
+    first = [{"role": "user", "content": "Investigate the service failure."}]
+    for index in range(5):
+        first.extend([
+            {"role": "assistant", "content": f"step {index}"},
+            {"role": "tool", "content": f"result {index}"},
+        ])
+    store.observe_messages(first)
+    assert store.maybe_compact(raw_messages=first, reason="first") is True
+    second = first + [
+        {"role": "assistant", "content": "one more step"},
+        {"role": "tool", "content": "small result"},
+    ]
+    store.observe_messages(second)
+    assert store.maybe_compact(raw_messages=second, reason="second") is False
+    assert store.state.compaction_count == 1
+    assert store.summary()["continuity_trace"][-1]["reason"] == "hysteresis_cooldown"
+
+
+def test_projection_can_be_suppressed_when_it_cannot_save_context(tmp_path):
+    agent = SimpleNamespace(
+        _reasoning_native_tier=2,
+        _reasoning_metrics=None,
+        reasoning_continuity_config={
+            "mode": "adaptive",
+            "activation_message_count": 2,
+            "capsule_token_budget": 1200,
+            "minimum_projection_saving_tokens": 400,
+        },
+        context_compressor=SimpleNamespace(context_length=100_000),
+    )
+    store = ContinuousStateStore(state_id="net-benefit", path=tmp_path / "state.json")
+    store._agent = agent
+    store.begin_turn("Check one small result.")
+    api = [
+        {"role": "system", "content": "Hermes"},
+        {"role": "user", "content": "Check one small result.", "_hermes_current_turn": True},
+        {"role": "assistant", "content": "done"},
+        {"role": "tool", "content": "small result"},
+    ]
+    result = store.prepare_api_messages(api, api[1:], current_turn_user_idx=0)
+    assert store.state.continuity_mode == "collecting"
+    assert "hermes-continuous-state" not in str(result)
 
 
 def test_native_tier_keeps_provider_items_instead_of_generic_projection():

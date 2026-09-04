@@ -160,6 +160,7 @@ class ReasoningMetrics:
     continuity_mode: str = "none"
     collecting_calls: int = 0
     uncached_input_tokens: int = 0
+    compaction_suppressed_events: int = 0
 
     def finish(self, result: Any, agent: Any) -> None:
         self.duration_ms = max(0.0, (time.time() - self.started_at) * 1000.0)
@@ -283,6 +284,7 @@ class ReasoningMetrics:
             "continuity_mode": self.continuity_mode,
             "collecting_calls": self.collecting_calls,
             "uncached_input_tokens": self.uncached_input_tokens,
+            "compaction_suppressed_events": self.compaction_suppressed_events,
         }
 
 

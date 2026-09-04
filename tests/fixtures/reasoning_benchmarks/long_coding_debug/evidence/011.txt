@@ -1,0 +1,4 @@
+ID=011
+STATUS=VERIFIED
+After repair, both the ordinary ordered case and the empty-batch case must pass.
+The report should include the command and its result.
