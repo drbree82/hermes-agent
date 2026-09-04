@@ -2,3 +2,19 @@ Evidence fragment 011
 Status: VERIFIED
 Observation: stage-6 completed with marker-111.
 This is supporting context, not one of the three required anchors. Keep the sequence and inspect the next fragment.
+Evidence fragment 011
+Status: VERIFIED
+Observation: stage-6 completed with marker-111.
+This is supporting context, not one of the three required anchors. Keep the sequence and inspect the next fragment.
+Audit detail 1: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 2: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 3: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 4: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 5: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 6: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 7: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 8: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 9: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 10: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 11: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.
+Audit detail 12: This deliberately verbose operational note preserves sequence context for fragment 011; it is not a required anchor and must not replace the verified markers.

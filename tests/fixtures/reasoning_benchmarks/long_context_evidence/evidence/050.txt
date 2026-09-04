@@ -2,3 +2,19 @@ Evidence fragment 050
 Status: VERIFIED
 CHECKSUM=LATE-91
 The late checksum closes the investigation. Combine it with the early and middle facts.
+Evidence fragment 050
+Status: VERIFIED
+CHECKSUM=LATE-91
+The late checksum closes the investigation. Combine it with the early and middle facts.
+Audit detail 1: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 2: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 3: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 4: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 5: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 6: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 7: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 8: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 9: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 10: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 11: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.
+Audit detail 12: This deliberately verbose operational note preserves sequence context for fragment 050; it is not a required anchor and must not replace the verified markers.

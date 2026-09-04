@@ -512,9 +512,13 @@ class ContinuousStateStore:
         messages = list(raw_messages)
         raw_chars = sum(len(_text(message.get("content"))) for message in messages)
         pressure = (
-            len(messages) >= 28
+            len(messages) >= _positive_int(
+                self._continuity_config().get("trajectory_message_threshold"), 28
+            )
             or len(self.state.tool_observations) > _MAX_RECENT_OBSERVATIONS
-            or raw_chars >= 80_000
+            or raw_chars >= _positive_int(
+                self._continuity_config().get("trajectory_chars_threshold"), 80_000
+            )
         )
         if not pressure:
             return False
@@ -652,6 +656,13 @@ class ContinuousStateStore:
         for index, item in enumerate(cleaned):
             if item.get("role") == "system" or index >= current_marker:
                 projected.append(item)
+        if self.state.compaction_count and current_marker < len(cleaned):
+            projected = self._retain_recent_active_turn(
+                projected,
+                _positive_int(
+                    self._continuity_config().get("active_turn_tail_messages"), 8
+                ),
+            )
         omitted_tokens = max(
             0,
             sum(len(_text(item.get("content"))) for item in cleaned)
@@ -678,6 +689,33 @@ class ContinuousStateStore:
         self._record_metric("substrate_context_projections", 1)
         self.checkpoint("generic_turn")
         return projected
+
+    @staticmethod
+    def _retain_recent_active_turn(
+        projected: list[dict[str, Any]], tail_limit: int
+    ) -> list[dict[str, Any]]:
+        """Drop old active-turn tool pairs after trajectory compaction.
+
+        The current user message and the newest complete assistant/tool tail
+        remain. Starting at an assistant message keeps provider tool-call and
+        tool-result pairing valid; the durable capsule carries older results.
+        """
+
+        user_index = next(
+            (index for index, item in enumerate(projected) if item.get("role") == "user"),
+            None,
+        )
+        if user_index is None:
+            return projected
+        active = projected[user_index + 1 :]
+        if len(active) <= tail_limit:
+            return projected
+        start = max(0, len(active) - tail_limit)
+        while start < len(active) and active[start].get("role") != "assistant":
+            start += 1
+        if start >= len(active):
+            return projected
+        return projected[: user_index + 1] + active[start:]
 
     def _continuity_config(self) -> dict[str, Any]:
         agent = getattr(self, "_agent", None)
@@ -775,12 +813,16 @@ class ContinuousStateStore:
                 if remaining > 80:
                     result += addition[:remaining] + " …[capsule budget]"
                 break
-        result += (
+        closing = (
             "\nWhen a transition creates a verified fact, decision, changed artifact, "
             "resolved question, or plan replacement, optionally append a small valid "
             "JSON delta in <hermes-state-delta>...</hermes-state-delta>.\n"
             "</hermes-continuous-state>"
         )
+        if len(result) + len(closing) > limit:
+            result = result[: max(0, limit - len(closing) - 24)].rstrip()
+            result += "\n…[capsule budget]"
+        result += closing
         return result
 
     def checkpoint(self, reason: str) -> dict[str, Any]:

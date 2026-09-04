@@ -298,6 +298,38 @@ def test_adaptive_tier_two_collects_then_projects_under_pressure(tmp_path):
     assert len(projected[1]["content"]) // 4 <= 360
 
 
+def test_compacted_projection_drops_old_active_turn_pairs_but_keeps_recent_tail(tmp_path):
+    agent = SimpleNamespace(
+        _reasoning_native_tier=2,
+        _reasoning_metrics=None,
+        reasoning_continuity_config={
+            "mode": "always",
+            "active_turn_tail_messages": 4,
+            "trajectory_message_threshold": 8,
+        },
+    )
+    store = ContinuousStateStore(state_id="active-tail", path=tmp_path / "state.json")
+    store._agent = agent
+    store.begin_turn("Investigate the service and retain the anchor fact.")
+    messages = [{"role": "user", "content": "Investigate the service and retain the anchor fact."}]
+    for index in range(6):
+        messages.extend([
+            {"role": "assistant", "content": f"call {index}"},
+            {"role": "tool", "name": "terminal", "content": f"verified anchor {index}"},
+        ])
+    store.observe_messages(messages)
+    store.maybe_compact(raw_messages=messages, reason="test_pressure")
+    api = [
+        {"role": "system", "content": "Hermes"},
+        *[{**item, "_hermes_source_index": index} for index, item in enumerate(messages)],
+    ]
+    api[1]["_hermes_current_turn"] = True
+    projected = store.prepare_api_messages(api, messages, current_turn_user_idx=0)
+    assert len(projected) == 6  # system + user + two complete recent pairs
+    assert "call 0" not in str(projected)
+    assert "call 5" in str(projected)
+
+
 def test_state_delta_is_removed_before_assistant_output_is_persisted(tmp_path):
     store = ContinuousStateStore(state_id="internal-delta", path=tmp_path / "state.json")
     message = store.sanitize_assistant_message({

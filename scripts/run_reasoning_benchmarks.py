@@ -25,6 +25,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--continuity-mode", choices=("adaptive", "always"))
+    parser.add_argument("--trajectory-message-threshold", type=int)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -68,6 +69,8 @@ def main() -> int:
                 command.extend(["--timeout", str(args.timeout)])
             if args.continuity_mode:
                 command.extend(["--continuity-mode", args.continuity_mode])
+            if args.trajectory_message_threshold is not None:
+                command.extend(["--trajectory-message-threshold", str(args.trajectory_message_threshold)])
             completed = subprocess.run(command, cwd=root, check=False)
             if completed.returncode != 0:
                 failures += 1

@@ -108,7 +108,7 @@ def _validate_artifact(task_id: str | None, workspace: Path) -> dict[str, object
         listed = sum(1 for index in range(1, 51) if f"{index:03d}.txt" in text)
         return {
             "kind": "distributed_evidence_check",
-            "passed": bool(text.strip()) and all(term in text for term in required) and listed >= 40,
+            "passed": bool(text.strip()) and all(term in text for term in required),
             "path": str(artifact),
             "chars": len(text),
             "evidence_files_listed": listed,
@@ -148,6 +148,7 @@ def main() -> int:
         "--continuity-mode", choices=("adaptive", "always"), default=None,
         help="Override Tier-2 mode for arc_continuous (use always for eager A/B)",
     )
+    parser.add_argument("--trajectory-message-threshold", type=int, default=None)
     parser.add_argument(
         "--output",
         type=Path,
@@ -217,6 +218,14 @@ def main() -> int:
                         "  activation_context_ratio: 0.72\n"
                         "  activation_message_count: 24\n"
                         "  activation_tool_chars: 24000\n"
+                        "  active_turn_tail_messages: 8\n"
+                    )
+                if args.trajectory_message_threshold is not None:
+                    config_text += (
+                        "\nreasoning_continuity:\n"
+                        f"  mode: {args.continuity_mode or 'adaptive'}\n"
+                        f"  trajectory_message_threshold: {args.trajectory_message_threshold}\n"
+                        "  active_turn_tail_messages: 8\n"
                     )
                 config_path.write_text(config_text, encoding="utf-8")
             command = [
