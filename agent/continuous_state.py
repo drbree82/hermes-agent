@@ -96,6 +96,7 @@ class ContinuousState:
     hypotheses: list[str] = field(default_factory=list)
     unresolved_questions: list[str] = field(default_factory=list)
     tool_observations: list[dict[str, Any]] = field(default_factory=list)
+    durable_tool_observations: list[dict[str, Any]] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     failures_and_retries: list[str] = field(default_factory=list)
     active_constraints: list[str] = field(default_factory=list)
@@ -134,6 +135,7 @@ class ContinuousState:
             "hypotheses",
             "unresolved_questions",
             "tool_observations",
+            "durable_tool_observations",
             "artifacts",
             "failures_and_retries",
             "active_constraints",
@@ -158,6 +160,11 @@ class ContinuousState:
         self.tool_observations = [
             item for item in self.tool_observations if isinstance(item, dict)
         ][- _MAX_RECENT_OBSERVATIONS :]
+        self.durable_tool_observations = [
+            item
+            for item in self.durable_tool_observations
+            if isinstance(item, dict)
+        ][-32:]
 
     def to_dict(self) -> dict[str, Any]:
         self._normalise()
@@ -284,6 +291,9 @@ class ContinuousStateStore:
                 "facts_retained": len(self.state.important_facts),
                 "decisions_retained": len(self.state.decisions),
                 "failures_retained": len(self.state.failures_and_retries),
+                "durable_observations_retained": len(
+                    self.state.durable_tool_observations
+                ),
             }
         )
         self.state.compacted_trajectory = self.state.compacted_trajectory[-_MAX_TRAJECTORY_COMPACTIONS:]
@@ -377,6 +387,10 @@ class ContinuousStateStore:
             f"{item.get('tool', 'tool')}: {item.get('observation', '')}"
             for item in self.state.tool_observations[-8:]
         ]
+        durable_observations = [
+            f"{item.get('tool', 'tool')}: {item.get('observation', '')}"
+            for item in self.state.durable_tool_observations[-6:]
+        ]
         return (
             "<hermes-continuous-state schema_version=1>\n"
             "This is the persistent working state for the active task. "
@@ -395,6 +409,8 @@ class ContinuousStateStore:
             + block("Unresolved questions", self.state.unresolved_questions)
             + "\n"
             + block("Recent tool observations", observations)
+            + "\n"
+            + block("Durable important tool observations", durable_observations)
             + "\n"
             + block("Artifacts/files", self.state.artifacts)
             + "\n"
@@ -509,6 +525,9 @@ class ContinuousStateStore:
             "at": time.time(),
         }
         self.state.tool_observations.append(observation)
+        if observation["failed"] or _looks_operationally_important(content):
+            self.state.durable_tool_observations.append(observation)
+            self.state.durable_tool_observations = self.state.durable_tool_observations[-32:]
         if observation["failed"]:
             self.state.failures_and_retries = _merge_recent(
                 self.state.failures_and_retries,
@@ -554,6 +573,26 @@ def _merge_recent(existing: list[str], incoming: Iterable[str], limit: int) -> l
 def _looks_failed(value: str) -> bool:
     lower = (value or "").lower()
     return any(token in lower for token in ("error", "failed", "traceback", "exception", "permission denied"))
+
+
+def _looks_operationally_important(value: str) -> bool:
+    lower = (value or "").lower()
+    return bool(
+        _PATH_RE.search(value or "")
+        or any(
+            token in lower
+            for token in (
+                "created",
+                "changed",
+                "modified",
+                "test",
+                "root cause",
+                "success",
+                "result",
+                "warning",
+            )
+        )
+    )
 
 
 def _safe_filename(value: str) -> str:

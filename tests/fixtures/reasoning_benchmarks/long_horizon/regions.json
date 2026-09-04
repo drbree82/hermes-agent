@@ -1,0 +1,5 @@
+[
+  {"id": "apac", "label": "Asia Pacific", "tax": 0.15},
+  {"id": "emea", "label": "Europe Middle East Africa", "tax": 0.2},
+  {"id": "amer", "label": "Americas", "tax": 0.08}
+]

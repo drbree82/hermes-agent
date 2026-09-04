@@ -144,6 +144,21 @@ embeds the per-run record for scripts.
 `scripts/compare_reasoning_backends.py` runs the same one-shot prompt once
 with each backend and writes a machine-readable comparison. It is an
 evaluation aid, not a second agent product; it invokes the normal Hermes CLI.
+For a repeatable fixture task:
+
+```bash
+.venv/bin/python scripts/compare_reasoning_backends.py \
+  --task-file benchmarks/reasoning_tasks.json \
+  --task-id coding_broken_repo \
+  --model thinkingmachines/inkling:free --provider openrouter \
+  --output /tmp/coding-ab.json
+```
+
+The fixture is copied separately for each backend. The full catalog can be
+run with `scripts/run_reasoning_benchmarks.py`. These tasks are deliberately
+Hermes tasks, not ARC games; live runs require the user's normal provider
+credentials and should report provider failures/timeouts separately from task
+success.
 
 ## Incremental follow-up work
 

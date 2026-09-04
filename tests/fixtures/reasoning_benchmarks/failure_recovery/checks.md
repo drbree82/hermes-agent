@@ -1,0 +1,4 @@
+- Validate the JSON syntax and required keys.
+- Confirm the endpoint port matches the service configuration when available.
+- Do not claim that a live endpoint is healthy without making a live request.
+- Escalate changes to production configuration for approval.

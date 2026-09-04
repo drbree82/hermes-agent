@@ -212,3 +212,62 @@ def test_native_tier_keeps_provider_items_instead_of_generic_projection():
     assert len(result) == 4
     assert not any("hermes-continuous-state" in str(item) for item in result)
     assert all("_hermes_source_index" not in item for item in result)
+
+
+def test_arc_backend_changes_the_request_context_between_tool_turns(tmp_path):
+    common = [
+        {"role": "user", "content": "Earlier task."},
+        {"role": "assistant", "content": "Earlier task is complete."},
+        {"role": "user", "content": "Inspect the fixture and write a report."},
+    ]
+    captured = []
+    agent = SimpleNamespace(
+        api_mode="chat_completions",
+        provider="local",
+        base_url="http://127.0.0.1:8000/v1",
+        runtime_capabilities={},
+        compression_enabled=True,
+        session_id="integration-session",
+        logs_dir=tmp_path,
+        _session_db=None,
+        session_input_tokens=0,
+        session_output_tokens=0,
+        session_reasoning_tokens=0,
+        session_cache_read_tokens=0,
+        session_estimated_cost_usd=0.0,
+        _codex_reasoning_replay_enabled=False,
+    )
+
+    def runner(current_agent, _prompt):
+        messages = list(common)
+        for tool_output in ("read /tmp/one.txt", "read /tmp/two.txt"):
+            messages.extend([
+                {"role": "assistant", "content": "I will inspect the next artifact."},
+                {"role": "tool", "name": "terminal", "content": tool_output},
+            ])
+            api = [
+                {"role": "system", "content": "Hermes"},
+                *[
+                    {**message, "_hermes_source_index": index}
+                    for index, message in enumerate(messages)
+                ],
+            ]
+            api[3]["_hermes_current_turn"] = True
+            captured.append(
+                current_agent._reasoning_backend_prepare_context(
+                    api,
+                    messages,
+                    current_turn_user_idx=2,
+                )
+            )
+        return {"final_response": "report", "completed": True, "messages": messages, "api_calls": 2}
+
+    result = get_reasoning_backend("arc_continuous").run(agent, runner, "Inspect the fixture")
+
+    assert result["reasoning_continuity"] == "substrate_managed"
+    assert captured[0][1]["role"] == "user"
+    assert len(captured[0]) == 4  # system + active user + assistant/tool tail
+    assert len(captured[1]) == 6  # same active turn, now with another tool result
+    assert all("Earlier task" not in str(item) for item in captured[0])
+    assert result["reasoning_metrics"]["substrate_context_projections"] == 2
+    assert result["reasoning_state"]["tool_observations"] == 2

@@ -1,0 +1,6 @@
+{
+  "service": "catalogue",
+  "version": "2",
+  "sources": ["products.json", "pricing.json", "regions.json"],
+  "pipeline": ["load", "join", "validate", "publish"]
+}

@@ -1,0 +1,33 @@
+{
+  "tasks": [
+    {
+      "id": "coding_broken_repo",
+      "category": "coding",
+      "fixture": "tests/fixtures/reasoning_benchmarks/broken_repo",
+      "prompt": "Diagnose and repair this broken Python repository. Run the tests, identify the root cause rather than masking the failure, make the smallest correct edit, and run the full test suite again. Report the files changed and the verification evidence."
+    },
+    {
+      "id": "sysadmin_broken_docker",
+      "category": "sysadmin",
+      "fixture": "tests/fixtures/reasoning_benchmarks/broken_docker",
+      "prompt": "Inspect this deliberately broken Docker/Linux service configuration. Determine why the service cannot start, correct the configuration safely, and validate it with static checks or a non-privileged dry run. Do not delete data or run destructive host commands. Explain each change and any validation limitation."
+    },
+    {
+      "id": "research_multi_step",
+      "category": "research",
+      "prompt": "Research the current Python release support policy for this repository's declared Python range. Use the available web tools and local files, retain the important facts and source URLs, compare the evidence, and produce a concise recommendation with citations."
+    },
+    {
+      "id": "long_horizon_inventory",
+      "category": "long_horizon",
+      "fixture": "tests/fixtures/reasoning_benchmarks/long_horizon",
+      "prompt": "Perform a careful multi-step inventory of this repository. Inspect all manifest and source files, identify the intended data flow, find inconsistencies, and write INVENTORY.md with evidence, open questions, and a prioritized remediation plan. Re-check the written artifact before finishing."
+    },
+    {
+      "id": "failure_recovery",
+      "category": "failure_recovery",
+      "fixture": "tests/fixtures/reasoning_benchmarks/failure_recovery",
+      "prompt": "Complete the maintenance task described in TASK.md. One referenced artifact is intentionally missing, so begin by investigating the failure, recover using the repository evidence, and then produce the requested report. Preserve your earlier findings after the failed action and verify the final report."
+    }
+  ]
+}

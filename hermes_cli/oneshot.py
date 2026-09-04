@@ -192,6 +192,10 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             "reasoning_backend": result.get("reasoning_backend"),
             "reasoning_capabilities": result.get("reasoning_capabilities"),
             "reasoning_metrics": result.get("reasoning_metrics"),
+            "reasoning_state": result.get("reasoning_state"),
+            "reasoning_continuity": result.get("reasoning_continuity"),
+            "turn_exit_reason": result.get("turn_exit_reason"),
+            "last_prompt_tokens": result.get("last_prompt_tokens"),
         }
         if failure is not None:
             report["failure"] = failure

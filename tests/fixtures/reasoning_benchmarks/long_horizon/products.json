@@ -1,0 +1,5 @@
+[
+  {"id": "p-1", "name": "Notebook", "region": "apac"},
+  {"id": "p-2", "name": "Lamp", "region": "emea"},
+  {"id": "p-3", "name": "Chair", "region": "amer"}
+]

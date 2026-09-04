@@ -1,0 +1,14 @@
+services:
+  api:
+    image: python:3.13-slim
+    working_dir: /srv/app
+    volumes:
+      - ./:/srv/app:ro
+    command: ["python", "-m", "http.server", "8080", "--bind", "127.0.0.1"]
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
