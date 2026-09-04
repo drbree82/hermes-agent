@@ -137,25 +137,26 @@ def _validate_artifact(task_id: str | None, workspace: Path) -> dict[str, object
             expected_status = "UNVERIFIED" if evidence_id in unverified_ids else "VERIFIED"
             status_valid = status_valid and entry.get("status") == expected_status
         anchor_facts = all(term in text for term in required)
+        lower_report = text.lower()
         distractors_not_verified = True
         for evidence_id in unverified_ids:
-            for line in text.splitlines():
-                if not re.search(rf"\b{evidence_id}(?:\.txt)?\b", line, re.IGNORECASE):
-                    continue
-                lower = line.lower()
-                explicitly_rejected = (
-                    "unverified" in lower or "not verified" in lower
-                    or "unsupported" in lower or "distractor" in lower
+            rejected = any(
+                evidence_id in line and any(
+                    marker in line
+                    for marker in (
+                        "unverified", "not verified", "not a fact",
+                        "unsupported", "distractor", "rejected",
+                    )
                 )
-                specific_status_line = bool(re.search(
-                    rf"(?:id|evidence|fragment|file)?\s*{evidence_id}(?:\.txt)?\s*(?:is|:|[-(])",
-                    lower,
-                ))
-                positive_claim = bool(
-                    re.search(r"\bverified\b|\bconfirmed\b|\bfact\b", lower)
-                )
-                if specific_status_line and positive_claim and not explicitly_rejected:
-                    distractors_not_verified = False
+                for line in lower_report.splitlines()
+            )
+            positive = bool(re.search(
+                rf"\b{evidence_id}(?:\.txt)?\b\s*(?:is|was|=|:|\|)\s*"
+                rf"(?:a\s+)?(?:verified|confirmed|fact)\b",
+                lower_report,
+            ))
+            if not rejected or positive:
+                distractors_not_verified = False
         synthesis = all(
             token in text.lower()
             for token in ("orbit-7", "middle-42", "late-91", "combined")

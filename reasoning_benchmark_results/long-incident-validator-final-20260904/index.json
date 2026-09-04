@@ -1,0 +1,22 @@
+{
+  "runs": [
+    {
+      "task_id": "long_operational_incident",
+      "repetition": 1,
+      "result": "reasoning_benchmark_results/long-incident-validator-final-20260904/long_operational_incident-r01.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_operational_incident",
+      "repetition": 2,
+      "result": "reasoning_benchmark_results/long-incident-validator-final-20260904/long_operational_incident-r02.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_operational_incident",
+      "repetition": 3,
+      "result": "reasoning_benchmark_results/long-incident-validator-final-20260904/long_operational_incident-r03.json",
+      "return_code": 0
+    }
+  ]
+}

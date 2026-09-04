@@ -176,3 +176,122 @@ The raw v2/v3 traces are committed under:
   adaptive comparison;
 * `reasoning_benchmark_results/long-context-forced-v2-20260904/` — final eager
   comparison.
+
+## Adaptive reliability follow-up
+
+Date: 2026-09-04. This follow-up uses the same Inkling/OpenRouter route and
+does not change the production default (`legacy`). The long-context validator
+was strengthened before these runs: it now requires the complete 50-entry
+inspection ledger, recomputes each evidence file's SHA-256, checks every
+verified/unverified status, and checks the three anchors plus the combined
+synthesis in `LONG_REPORT.md`. Results from earlier runs are not silently
+reclassified under this stronger validator.
+
+### Threshold calibration
+
+Three paired repetitions were run for each deliberately non-Cartesian setting
+on `long_context_distributed_evidence`. The trajectory-compaction threshold was
+held at 28 messages for this calibration. `Δ tokens` is ARC minus legacy;
+negative is better. A zero projection row means the net-benefit guard correctly
+kept the healthy transcript intact.
+
+| Activation setting (messages / tool chars / context ratio) | Valid ARC | Median Δ tokens | Median ARC calls | Median compactions | Notes |
+|---|---:|---:|---:|---:|---|
+| 12 / 16k / .55 | 2/3 | +7,012 | 17 | 1 | One invalid run and high variance |
+| 20 / 24k / .65 | 3/3 | -76,573 | 10 | 0 | Usually never activated |
+| 28 / 32k / .72 | 1/3 | +40,161 | 14 | 0 | One +191k outlier; two invalid outcomes |
+| 36 / 40k / .80 | 3/3 | +50,420 | 13 | 0 | Usually never activated |
+
+This sweep does not establish a stable crossover from activation pressure alone.
+The settings that avoided projection often had the best token result simply
+because they behaved like legacy; the aggressively activated setting had
+mechanical failures and large tails. The useful trigger remains imminent
+trajectory compaction/context pressure, combined with the net-benefit guard,
+rather than an eager fixed message count.
+
+### Twenty paired repetitions at the strongest candidate
+
+The candidate was adaptive mode with trajectory compaction at 16 messages,
+activation at 24 messages or 24k tool characters, context ratio .72, and a
+1,200-token capsule. Every pair used a clean fixture copy. The full traces are
+under `reasoning_benchmark_results/long-context-candidate20-20260904/`.
+
+| Strategy | Validated success | Mean tokens | Median tokens | P25–P75 tokens | Mean calls | Median calls | Mean time | Median time |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| legacy | 18/20 | 195,186 | 178,469 | 151,582–250,936 | 11.6 | 11.5 | 24.0s | 22.2s |
+| arc_continuous adaptive | 15/20 | 192,680 | 170,791 | 154,166–211,800 | 13.1 | 11.5 | 26.0s | 23.8s |
+
+Paired ARC-minus-legacy token delta had mean **-2,506**, median **+1,875**,
+P25–P75 **-29,823 to +43,237**, standard deviation **72,522**, with 10 wins,
+10 losses and no ties. ARC's measured duration delta had median +2.4 seconds
+(P25–P75 -3.7 to +6.6 seconds). ARC had 1.9 median compactions (P25–P75
+1–2.25), 5.2 median projections, and a 1,198-token capsule. The median
+estimated net context saving was positive at 25,105 tokens, but that did not
+translate into a reliable provider-token or success advantage.
+
+Tail risk was material: ARC was more than 25% more expensive than its paired
+legacy run in 5/20 pairs and more than 50% more expensive in 3/20; no run was
+more than 100% more expensive. ARC passed the mechanical validator in 15/20
+runs versus 18/20 for legacy. This candidate therefore should not replace
+legacy, despite its lower mean provider-token total.
+
+### Pathological-run diagnosis
+
+The new `reasoning_state.continuity_trace` records activation/compaction reason,
+raw and projected context sizes, capsule size, omitted tokens, net savings,
+state counts, and hysteresis suppressions without recording raw reasoning.
+The largest-cost candidate trace (repetition 10) shows the causal sequence:
+
+1. A first compaction occurred at 17 messages, but only 527 estimated tokens
+   were removable, so the first projection was net-neutral after the capsule.
+2. The substrate then projected the active turn repeatedly while the raw tool
+   stream grew; hysteresis suppressed intervening compactions until enough new
+   messages or tool bytes accumulated.
+3. Later compactions removed 3,881 and then 18,880 transcript tokens from the
+   projected request, while retaining a 1,198-token capsule. The trace records
+   five compactions/projections in that run, not twelve uninstrumented events.
+
+The trace points to stochastic model trajectory/tool-output growth—not stale
+state duplication—as the main cost driver in this run. The code now prevents
+zero-growth compaction, records every suppression, keeps the last compaction's
+task epoch, and refuses low-benefit activation before there is removable
+history. The long coding fixture also produced a 97-call/24-compaction ARC
+outlier under intentionally low thresholds; this is retained as a warning that
+fixture pressure settings themselves can expose tail instability.
+
+### Additional pressure fixtures
+
+Two deterministic fixtures were added: `long_coding_debug` requires a repair,
+full pytest validation, and all 12 distributed evidence items;
+`long_operational_incident` requires a diagnosis combining 12 logs while
+rejecting an unverified database-outage distractor. Initial operational runs
+were invalidated by a validator wording bug, so they are retained separately
+and not counted as corrected results. A corrected rerun is in
+`reasoning_benchmark_results/long-incident-validator-pass3-20260904/`; it
+recorded 0/3 validated outcomes for both backends. This is a real fixture
+signal: one legacy run reported a failed artifact write, while one ARC report
+omitted an evidence ID; the mechanical validator correctly rejected both
+runs. The coding run's five paired repetitions produced 4/5 validated ARC
+outcomes and 5/5 legacy outcomes; ARC had one mechanical test failure and one
+97-call tail outlier. These fixtures confirm that the variance is not unique
+to the 50-file evidence task, but the current small fixture sample is not a
+general model-quality estimate.
+
+### Crossover conclusion
+
+For short tasks, eager capsules remain a clear cost with no success benefit.
+For genuinely pressured tasks, ordinary transcript continuity and substrate
+continuity can both succeed; substrate-managed projection can reduce the
+estimated request context substantially after compaction, but this experiment
+does not show a reliable total-token or success improvement. The approximate
+crossover is therefore conditional rather than a single token count: it begins
+only after a real compaction would otherwise be required and only when enough
+history is removable to pay for the capsule. At the tested 16-message
+compaction point, median context savings were positive but success and tail
+cost were worse often enough to rule out promotion. No crossover point can be
+claimed yet for general Hermes work.
+
+The local OpenAI-compatible endpoint at `192.168.68.65:8086` was unavailable
+on this date, so no Qwen/local-model conclusion is claimed. The next valid
+step is to repeat the same fixtures with a live second Tier-2 model; no Inkling
+specific tuning should be promoted before that comparison.

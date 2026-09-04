@@ -1,0 +1,124 @@
+{
+  "runs": [
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 1,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r01.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 2,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r02.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 3,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r03.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 4,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r04.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 5,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r05.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 6,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r06.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 7,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r07.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 8,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r08.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 9,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r09.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 10,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r10.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 11,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r11.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 12,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r12.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 13,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r13.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 14,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r14.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 15,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r15.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 16,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r16.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 17,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r17.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 18,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r18.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 19,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r19.json",
+      "return_code": 0
+    },
+    {
+      "task_id": "long_context_distributed_evidence",
+      "repetition": 20,
+      "result": "reasoning_benchmark_results/long-context-candidate20-20260904/long_context_distributed_evidence-r20.json",
+      "return_code": 0
+    }
+  ]
+}
