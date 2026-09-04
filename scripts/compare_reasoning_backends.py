@@ -57,6 +57,53 @@ def _run_backend(
         return _text(stdout or exc.stdout), _text(stderr or exc.stderr), 124
 
 
+def _validate_artifact(task_id: str | None, workspace: Path) -> dict[str, object] | None:
+    """Validate benchmark deliverables without trusting the final answer."""
+
+    if not task_id or not workspace.exists():
+        return None
+    if task_id == "coding_broken_repo":
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return {
+            "kind": "pytest",
+            "passed": completed.returncode == 0,
+            "return_code": completed.returncode,
+            "output": (completed.stdout + completed.stderr)[-4000:],
+        }
+    if task_id == "sysadmin_broken_docker":
+        compose = workspace / "docker-compose.yml"
+        text = compose.read_text(encoding="utf-8") if compose.exists() else ""
+        passed = "8080:8080" in text and "8081" not in text
+        return {"kind": "static_compose_check", "passed": passed, "details": text[-2000:]}
+    if task_id == "long_horizon_inventory":
+        artifact = workspace / "INVENTORY.md"
+        text = artifact.read_text(encoding="utf-8") if artifact.exists() else ""
+        required = ("manifest", "pricing", "regions")
+        return {
+            "kind": "artifact_check",
+            "passed": bool(text.strip()) and all(term in text.lower() for term in required),
+            "path": str(artifact),
+            "chars": len(text),
+        }
+    if task_id == "failure_recovery":
+        artifact = workspace / "RECOVERY.md"
+        text = artifact.read_text(encoding="utf-8") if artifact.exists() else ""
+        return {
+            "kind": "artifact_check",
+            "passed": bool(text.strip()) and "missing" in text.lower(),
+            "path": str(artifact),
+            "chars": len(text),
+        }
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt", nargs="?", help="The identical task to run twice")
@@ -163,6 +210,11 @@ def main() -> int:
                     usage = json.loads(usage_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     usage = {"usage_report_error": True}
+            validation = None
+            try:
+                validation = _validate_artifact(task_id, run_workdir)
+            except (OSError, subprocess.SubprocessError) as exc:
+                validation = {"kind": "validator_error", "passed": False, "error": str(exc)}
             records.append(
                 {
                     "backend": backend,
@@ -172,6 +224,7 @@ def main() -> int:
                     "stdout": stdout,
                     "stderr": stderr,
                     "usage": usage,
+                    "artifact_validation": validation,
                     "workspace": str(run_workdir),
                 }
             )

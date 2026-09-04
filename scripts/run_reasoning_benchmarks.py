@@ -23,12 +23,15 @@ def main() -> int:
     parser.add_argument("--provider")
     parser.add_argument("--toolsets")
     parser.add_argument("--timeout", type=float)
+    parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("reasoning_benchmark_results"),
     )
     args = parser.parse_args()
+    if args.repetitions < 1:
+        parser.error("--repetitions must be at least 1")
 
     task_file = args.task_file.expanduser().resolve()
     catalog = json.loads(task_file.read_text(encoding="utf-8"))
@@ -46,30 +49,32 @@ def main() -> int:
     index: list[dict[str, object]] = []
     for task in tasks:
         task_id = str(task.get("id") or "")
-        output_path = output_dir / f"{task_id}.json"
-        command = [
-            sys.executable,
-            str(compare_script),
-            "--task-file",
-            str(task_file),
-            "--task-id",
-            task_id,
-            "--output",
-            str(output_path),
-        ]
-        if args.model:
-            command.extend(["--model", args.model])
-        if args.provider:
-            command.extend(["--provider", args.provider])
-        if args.toolsets:
-            command.extend(["--toolsets", args.toolsets])
-        if args.timeout is not None:
-            command.extend(["--timeout", str(args.timeout)])
-        completed = subprocess.run(command, cwd=root, check=False)
-        if completed.returncode != 0:
-            failures += 1
-        index.append({"task_id": task_id, "result": str(output_path), "return_code": completed.returncode})
-        print(f"{task_id}: {'ok' if completed.returncode == 0 else 'failed'} ({output_path})")
+        for repetition in range(1, args.repetitions + 1):
+            output_path = output_dir / f"{task_id}-r{repetition:02d}.json"
+            command = [
+                sys.executable,
+                str(compare_script),
+                "--task-file", str(task_file), "--task-id", task_id,
+                "--output", str(output_path),
+            ]
+            if args.model:
+                command.extend(["--model", args.model])
+            if args.provider:
+                command.extend(["--provider", args.provider])
+            if args.toolsets:
+                command.extend(["--toolsets", args.toolsets])
+            if args.timeout is not None:
+                command.extend(["--timeout", str(args.timeout)])
+            completed = subprocess.run(command, cwd=root, check=False)
+            if completed.returncode != 0:
+                failures += 1
+            index.append({
+                "task_id": task_id,
+                "repetition": repetition,
+                "result": str(output_path),
+                "return_code": completed.returncode,
+            })
+            print(f"{task_id} r{repetition:02d}: {'ok' if completed.returncode == 0 else 'failed'} ({output_path})")
 
     index_path = output_dir / "index.json"
     index_path.write_text(json.dumps({"runs": index}, indent=2) + "\n", encoding="utf-8")
