@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,38 @@ def _text(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", "replace")
     return str(value or "")
+
+
+def _run_backend(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float | None,
+) -> tuple[str, str, int]:
+    """Run one backend in a killable process group."""
+
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return stdout, stderr, process.returncode
+    except subprocess.TimeoutExpired as exc:
+        # Hermes may spawn helper processes whose inherited pipes otherwise
+        # keep communicate() blocked after the parent deadline.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+        return _text(stdout or exc.stdout), _text(stderr or exc.stderr), 124
 
 
 def main() -> int:
@@ -108,32 +141,21 @@ def main() -> int:
                 command.extend(["--provider", args.provider])
             if args.toolsets:
                 command.extend(["--toolsets", args.toolsets])
-            try:
-                env = os.environ.copy()
-                existing_pythonpath = env.get("PYTHONPATH")
-                env["PYTHONPATH"] = (
-                    str(root)
-                    if not existing_pythonpath
-                    else os.pathsep.join((str(root), existing_pythonpath))
-                )
-                if task_id:
-                    env["HERMES_REASONING_BENCHMARK_TASK"] = str(task_id)
-                completed = subprocess.run(
-                    command,
-                    cwd=run_workdir,
-                    env=env,
-                    text=True,
-                    capture_output=True,
-                    timeout=args.timeout,
-                    check=False,
-                )
-                stdout = completed.stdout
-                stderr = completed.stderr
-                return_code = completed.returncode
-            except subprocess.TimeoutExpired as exc:
-                stdout = _text(exc.stdout)
-                stderr = _text(exc.stderr)
-                return_code = 124
+            env = os.environ.copy()
+            existing_pythonpath = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = (
+                str(root)
+                if not existing_pythonpath
+                else os.pathsep.join((str(root), existing_pythonpath))
+            )
+            if task_id:
+                env["HERMES_REASONING_BENCHMARK_TASK"] = str(task_id)
+            stdout, stderr, return_code = _run_backend(
+                command,
+                cwd=run_workdir,
+                env=env,
+                timeout=args.timeout,
+            )
 
             usage = {}
             if usage_path.exists():
@@ -145,6 +167,8 @@ def main() -> int:
                 {
                     "backend": backend,
                     "return_code": return_code,
+                    "timed_out": return_code == 124,
+                    "status": "timeout" if return_code == 124 else "completed",
                     "stdout": stdout,
                     "stderr": stderr,
                     "usage": usage,
