@@ -1,6 +1,6 @@
 # Optional ARC-inspired reasoning substrate
 
-Status: experimental design and first implementation
+Status: experimental implementation on `arc-continuous-hermes`
 
 ## Intent
 
@@ -19,10 +19,10 @@ reasoning_backend: arc_continuous
 ```
 
 `legacy` calls the current Hermes conversation loop. `arc_continuous` uses the
-same loop and tool dispatch for the first slice, but gives it a runtime
-adapter boundary, explicit capability reporting, durable telemetry, and a
-provider-neutral state/checkpoint contract. This deliberately makes the
-smallest change that can run an unchanged Hermes task through either backend.
+same loop and tool dispatch, but adds a durable working-state lifecycle and a
+request-local context projection. This deliberately keeps the Hermes product
+and its tool ecosystem in one loop while changing how cognition is carried
+between model/tool interactions.
 
 ## What was learned from ARC
 
@@ -36,6 +36,15 @@ The transferable ARC-AGI-3 ideas are architectural rather than game-specific:
 * compaction as a state transition that prunes history after the newest
   compaction item;
 * timestamped trajectory/telemetry events that can be compared across runs.
+
+The current ARC implementation makes continuity concrete in two places:
+`BenchmarkingAgent` owns a conversation/runtime state across iterations, and
+the provider adapter receives only the new turn plus the provider-owned state
+handle when the selected runtime supports it. Its OpenAI Responses path either
+chains `previous_response_id` or replays native output items (including
+encrypted reasoning and compaction items) when operating statelessly. The
+generic Hermes adaptation is therefore a working-set projection, not a copied
+game loop.
 
 These ideas are adapted to Hermes' existing transcript, checkpoint, session,
 and compression systems. Hermes does not import the ARC repositories at
@@ -66,37 +75,67 @@ compaction, reasoning effort, steering, tool continuation, and resumable
 handles. A capability is never inferred merely because the selected backend
 is named `arc_continuous`.
 
-For Responses transports that preserve native output items, the existing
-Hermes Codex/Responses replay path remains authoritative. The continuous
-backend records the native-state reuse and keeps the opaque provider items in
-the existing session/checkpoint transcript. For local or Chat Completions
-providers, the backend reports native-state capabilities as unavailable and
-uses Hermes' explicit transcript, tool-result persistence, checkpoints, and
-local compaction as the generic approximation.
+`agent/continuous_state.py` owns `ContinuousState`, a versioned and
+JSON-serialisable envelope containing the objective, plan, working state,
+facts, decisions, hypotheses, unresolved questions, tool observations,
+artifacts, failures, constraints, completion criteria, compaction records and
+checkpoint records. It is written atomically beside the normal Hermes logs or
+under `~/.hermes/sessions/continuous_state/`. The state file is inspectable and
+resumable; a corrupt auxiliary file is ignored so the canonical SQLite
+transcript still loads.
+
+For Tier 2 providers (local Qwen/llama.cpp/vLLM/SGLang, Inkling, ordinary
+OpenAI-compatible relays), each request keeps the active user turn and its
+tool interactions, replaces older transcript turns in the API copy with the
+working-state capsule, and leaves the persisted Hermes transcript unchanged.
+The state is updated before every inference request and checkpointed at turn
+start, each projected/native turn, trajectory compaction, and turn completion.
+Trajectory compaction deduplicates redundant tool observations while retaining
+failures, facts, decisions, artifacts and the full canonical transcript.
+
+For Tier 3 Responses transports, the generic projection is intentionally
+disabled. Hermes' existing Codex/Responses converter retains native encrypted
+reasoning items, assistant `phase` fields, and native `compaction` items in the
+canonical session/checkpoint path. This prevents the generic capsule from
+destroying the provider's stronger state. Telemetry reports whether a turn
+used `substrate_managed` or `provider_native` continuity.
 
 ## OpenAI Responses and Astra direction
 
 The adapter targets the actual Responses interfaces: output items are replayed
 as input items; reasoning encrypted content is retained when the endpoint
-supports it; and `/responses/compact` plus `context_management` are capability
-gated rather than assumed. GPT-6 Astra is recognized as a future/current
-Responses model family for capability resolution, while route/model gates
-remain conservative when access is unavailable.
+supports it; assistant `phase` values are preserved; and `/responses/compact`
+plus `context_management` are capability gated rather than assumed. GPT-6
+Astra is recognized as a current/future Responses model family for capability
+resolution, while route/model gates remain conservative when access is
+unavailable.
 
-The first slice does not invent a server-side `previous_response_id` policy
-for Hermes. Hermes needs its own durable transcript, tool approvals, steering,
-and cross-provider session semantics. A future provider adapter can opt into
-server-side response handles once those semantics are explicitly reconciled.
-Mid-turn WebSocket steering is likewise represented as a capability only when
-an implementation exists; Hermes' existing safe-boundary steering remains
-unchanged.
+`previous_response_id` is deliberately not enabled in this phase. The current
+Hermes Responses transport sends `store=false`, supports Codex/ChatGPT, xAI,
+GitHub and compatible relays through one converter, and has retries,
+cross-provider switching, approvals and safe-boundary steering that all depend
+on Hermes retaining the canonical transcript. OpenAI documents
+`previous_response_id` as a multi-turn state handle, but it cannot be combined
+with `conversation`, and a safe implementation here would require a distinct
+direct-OpenAI `store=true` delta protocol for function-call outputs and retry
+rollback. Adding the field to the existing reconstructed request would either
+duplicate input or silently fork provider state. Native encrypted reasoning
+replay plus native compaction is the current Tier 3 path; a future direct
+OpenAI adapter can add the response-id protocol behind a capability and an
+explicit privacy/configuration gate.
+
+This is an exact compatibility boundary, not a claim that encrypted replay is
+identical to server-side response continuation. Mid-turn WebSocket steering is
+likewise represented as a capability only when an implementation exists;
+Hermes' existing safe-boundary steering remains unchanged.
 
 ## Instrumentation and evaluation
 
 Each backend emits a structured per-turn report containing success/failure,
-model-call attempts, input/output/reasoning tokens, context samples, tool
-calls, duration, estimated cost when available, compaction events,
-retries/errors, and native-state reuse. Reports are attached to the normal
+model-call attempts, input/output/cached/reasoning/total tokens, context
+samples, tool calls and repeated-tool diagnostics, duration, estimated cost
+when available, local/trajectory/provider compaction events, retries/errors,
+checkpoint events, and native-state reuse. Reports are attached to the normal
 result and persisted as sanitized runtime metadata; opaque provider reasoning
 blobs are not copied into telemetry. Normal sessions append records to
 `~/.hermes/sessions/reasoning_metrics.jsonl`; a one-shot `--usage-file` also
@@ -109,12 +148,14 @@ evaluation aid, not a second agent product; it invokes the normal Hermes CLI.
 ## Incremental follow-up work
 
 1. Add the backend/capability seam and telemetry while preserving the current
-   loop.
-2. Validate the two backends on identical real Hermes tasks.
-3. Extend provider adapters only where a provider's documented native state is
+   loop. (complete)
+2. Add the generic state lifecycle, trajectory projection, compaction and
+   checkpoints. (complete in this phase)
+3. Validate the two backends on identical real Hermes tasks.
+4. Extend provider adapters only where a provider's documented native state is
    available, with capability tests and explicit fallbacks.
-4. Consider optional provider server-state handles and richer trajectory
-   replay after measuring real task outcomes.
+5. Consider optional direct-OpenAI response-id handles after measuring real
+   task outcomes and resolving the `store=true` privacy/retry contract.
 
 The success criterion is improved or equal real-world Hermes task performance,
 not resemblance to an ARC benchmark harness.

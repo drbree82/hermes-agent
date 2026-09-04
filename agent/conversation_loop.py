@@ -2185,6 +2185,23 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # The ARC-inspired substrate needs a stable anchor for the active user
+    # turn after turn-context repair has finished. It uses this only on the
+    # per-request API copy; the canonical Hermes transcript is unchanged.
+    if callable(getattr(agent, "_reasoning_backend_prepare_context", None)):
+        try:
+            from agent.continuous_state import message_key as _continuous_message_key
+
+            if (
+                isinstance(current_turn_user_idx, int)
+                and 0 <= current_turn_user_idx < len(messages)
+            ):
+                agent._continuous_current_turn_anchor = _continuous_message_key(
+                    messages[current_turn_user_idx]
+                )
+        except Exception:
+            agent._continuous_current_turn_anchor = None
+
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
     agent._delivered_interim_texts = set()
@@ -2631,6 +2648,26 @@ def run_conversation(
                         if _agg_slot and _agg_slot.get("model"):
                             _sanitize_model = _agg_slot["model"]
                 agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
+            # Private source markers let the optional continuous substrate
+            # project only the active turn while retaining all Hermes-native
+            # tool/approval/steering messages. They are removed before the
+            # request reaches any provider.
+            if callable(getattr(agent, "_reasoning_backend_prepare_context", None)):
+                try:
+                    from agent.continuous_state import message_key as _continuous_message_key
+
+                    api_msg["_hermes_source_index"] = idx
+                    current_anchor = getattr(
+                        agent, "_continuous_current_turn_anchor", None
+                    )
+                    if (
+                        idx == current_turn_user_idx
+                        or current_anchor == _continuous_message_key(msg)
+                    ):
+                        api_msg["_hermes_current_turn"] = True
+                except Exception:
+                    pass
+
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)
@@ -2655,6 +2692,35 @@ def run_conversation(
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        # ``legacy`` sends the ordinary Hermes transcript. ``arc_continuous``
+        # delegates this request-local projection to its state manager:
+        # generic providers receive the active turn plus a durable working
+        # state capsule, while native Responses providers retain their
+        # encrypted reasoning items and existing provider-side compaction.
+        _continuous_prepare = getattr(
+            agent, "_reasoning_backend_prepare_context", None
+        )
+        if callable(_continuous_prepare):
+            try:
+                api_messages = _continuous_prepare(
+                    api_messages,
+                    messages,
+                    current_turn_user_idx=current_turn_user_idx,
+                    effective_system=effective_system or "",
+                )
+            except Exception:
+                # Auxiliary working state must never take down Hermes. Strip
+                # its private markers and continue with the normal request.
+                logger.warning(
+                    "Continuous reasoning context preparation failed; "
+                    "using the canonical Hermes request",
+                    exc_info=True,
+                )
+                for _item in api_messages:
+                    if isinstance(_item, dict):
+                        _item.pop("_hermes_source_index", None)
+                        _item.pop("_hermes_current_turn", None)
 
         if moa_config:
             try:

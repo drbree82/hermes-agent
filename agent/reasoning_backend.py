@@ -41,6 +41,8 @@ class ProviderCapabilities:
     tool_call_continuation: bool = False
     resumable_response_state: bool = False
     resumable_sessions: bool = False
+    substrate_managed_continuity: bool = False
+    native_encrypted_reasoning_replay: bool = False
 
     def to_dict(self) -> Dict[str, bool]:
         return {
@@ -53,6 +55,8 @@ class ProviderCapabilities:
             "tool_call_continuation": self.tool_call_continuation,
             "resumable_response_state": self.resumable_response_state,
             "resumable_sessions": self.resumable_sessions,
+            "substrate_managed_continuity": self.substrate_managed_continuity,
+            "native_encrypted_reasoning_replay": self.native_encrypted_reasoning_replay,
         }
 
 
@@ -99,6 +103,8 @@ def resolve_provider_capabilities(agent: Any) -> ProviderCapabilities:
             responses and getattr(agent, "native_response_state_handle", False)
         ),
         resumable_sessions=bool(session_db and getattr(agent, "session_id", None)),
+        substrate_managed_continuity=True,
+        native_encrypted_reasoning_replay=native_replay,
     )
 
 
@@ -119,10 +125,17 @@ class ReasoningMetrics:
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
+    cached_input_tokens: int = 0
+    total_tokens: int = 0
     tool_calls: int = 0
+    redundant_tool_calls: int = 0
     context_samples: list[int] = field(default_factory=list)
     compaction_events: int = 0
+    trajectory_compactions: int = 0
+    substrate_context_projections: int = 0
+    checkpoint_events: int = 0
     native_state_reuses: int = 0
+    native_state_mode: str = "none"
     estimated_cost_usd: Optional[float] = None
 
     def finish(self, result: Any, agent: Any) -> None:
@@ -137,6 +150,22 @@ class ReasoningMetrics:
                 for message in messages
                 if isinstance(message, dict)
             )
+            tool_keys: list[str] = []
+            for message in messages:
+                if not isinstance(message, dict) or message.get("role") != "tool":
+                    continue
+                tool_keys.append(
+                    json.dumps(
+                        {
+                            "name": message.get("name") or message.get("tool_name"),
+                            "content": message.get("content"),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
+                )
+            self.redundant_tool_calls = max(0, len(tool_keys) - len(set(tool_keys)))
             logical_calls = int(result.get("api_calls") or 0)
             self.retries = max(self.retries, self.model_calls - logical_calls)
         else:
@@ -158,6 +187,19 @@ class ReasoningMetrics:
             int(getattr(agent, "session_reasoning_tokens", 0) or 0)
             - int(baseline.get("reasoning_tokens", 0) or 0),
         )
+        self.cached_input_tokens = max(
+            0,
+            int(
+                getattr(
+                    agent,
+                    "session_cached_input_tokens",
+                    getattr(agent, "session_cache_read_tokens", 0),
+                )
+                or 0
+            )
+            - int(baseline.get("cached_input_tokens", 0) or 0),
+        )
+        self.total_tokens = self.input_tokens + self.output_tokens
         cost = getattr(agent, "session_estimated_cost_usd", None)
         base_cost = baseline.get("cost")
         self.estimated_cost_usd = (
@@ -182,10 +224,17 @@ class ReasoningMetrics:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "reasoning_tokens": self.reasoning_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "total_tokens": self.total_tokens,
             "tool_calls": self.tool_calls,
+            "redundant_tool_calls": self.redundant_tool_calls,
             "context_samples": list(self.context_samples),
             "compaction_events": self.compaction_events,
+            "trajectory_compactions": self.trajectory_compactions,
+            "substrate_context_projections": self.substrate_context_projections,
+            "checkpoint_events": self.checkpoint_events,
             "native_state_reuses": self.native_state_reuses,
+            "native_state_mode": self.native_state_mode,
             "estimated_cost_usd": self.estimated_cost_usd,
         }
 
@@ -208,8 +257,21 @@ class ReasoningBackend:
             "input_tokens": getattr(agent, "session_input_tokens", 0),
             "output_tokens": getattr(agent, "session_output_tokens", 0),
             "reasoning_tokens": getattr(agent, "session_reasoning_tokens", 0),
+            "cached_input_tokens": getattr(
+                agent,
+                "session_cached_input_tokens",
+                getattr(agent, "session_cache_read_tokens", 0),
+            ),
             "cost": getattr(agent, "session_estimated_cost_usd", 0.0),
         }
+        caps = resolve_provider_capabilities(agent)
+        metrics.native_state_mode = (
+            "provider_native"
+            if caps.persistent_reasoning_state
+            else "substrate_managed"
+            if self.name == BACKEND_ARC_CONTINUOUS
+            else "legacy_transcript"
+        )
         agent._reasoning_metrics = metrics
         originals = self._install_observers(agent, metrics)
         try:
@@ -296,27 +358,49 @@ class LegacyReasoningBackend(ReasoningBackend):
 
 
 class ArcContinuousReasoningBackend(ReasoningBackend):
-    """ARC-inspired continuous runtime using Hermes state as its substrate."""
+    """ARC-inspired runtime with a real working-state/context projection."""
 
     name = BACKEND_ARC_CONTINUOUS
 
     def run(self, agent: Any, runner: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        # The transcript, checkpoint manager, and provider-native replay fields
-        # are the durable state. This metadata is intentionally sanitized and
-        # never contains encrypted reasoning content or tool arguments.
-        state = getattr(agent, "_reasoning_state", None) or {
-            "version": 1,
-            "adapter_id": "hermes",
-            "strategy": "continuous_conversation",
-            "turns": 0,
-        }
-        state["turns"] = int(state.get("turns", 0) or 0) + 1
-        state["native_state"] = "provider" if resolve_provider_capabilities(agent).persistent_reasoning_state else "explicit_transcript"
-        agent._reasoning_state = state
-        result = super().run(agent, runner, *args, **kwargs)
-        if isinstance(result, dict):
-            result["reasoning_state"] = dict(state)
-        return result
+        from agent.continuous_state import ContinuousStateStore
+
+        manager = ContinuousStateStore.for_agent(agent)
+        manager._agent = agent
+        objective = args[0] if args else kwargs.get("user_message", "")
+        manager.begin_turn(objective)
+        capabilities = resolve_provider_capabilities(agent)
+        agent._reasoning_native_tier = (
+            3
+            if capabilities.persistent_reasoning_state
+            else 2
+        )
+        agent._continuous_state_store = manager
+        previous_hook = getattr(agent, "_reasoning_backend_prepare_context", None)
+        agent._reasoning_backend_prepare_context = manager.prepare_api_messages
+        try:
+            result = super().run(agent, runner, *args, **kwargs)
+            if isinstance(result, dict):
+                result_messages = result.get("messages") or []
+                manager.observe_messages(result_messages)
+                manager.checkpoint("turn_complete")
+                result["reasoning_state"] = manager.summary()
+                result["reasoning_continuity"] = (
+                    "provider_native"
+                    if agent._reasoning_native_tier >= 3
+                    else "substrate_managed"
+                )
+            return result
+        finally:
+            manager.persist()
+            if previous_hook is None:
+                try:
+                    delattr(agent, "_reasoning_backend_prepare_context")
+                except AttributeError:
+                    pass
+            else:
+                agent._reasoning_backend_prepare_context = previous_hook
+            agent._reasoning_native_tier = 0
 
 
 _BACKENDS = {

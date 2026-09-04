@@ -8,6 +8,7 @@ from agent.reasoning_backend import (
     get_reasoning_backend,
     resolve_provider_capabilities,
 )
+from agent.continuous_state import ContinuousStateStore
 from agent.native_compaction import is_native_compaction_model
 
 
@@ -121,3 +122,93 @@ def test_astra_is_explicitly_compaction_eligible_but_unknown_models_are_not():
 def test_unknown_backend_is_rejected_before_a_turn():
     with pytest.raises(ValueError, match="Unknown reasoning backend"):
         get_reasoning_backend("arc-game-runner")
+
+
+def test_substrate_projects_active_turn_and_persists_working_state(tmp_path):
+    agent = SimpleNamespace(
+        _reasoning_native_tier=2,
+        _reasoning_metrics=None,
+    )
+    store = ContinuousStateStore(state_id="session-1", path=tmp_path / "state.json")
+    store._agent = agent
+    store.begin_turn("Repair the repository and keep the tests passing.")
+
+    raw_messages = [
+        {"role": "user", "content": "An earlier unrelated request."},
+        {"role": "assistant", "content": "That earlier request is complete."},
+        {"role": "user", "content": "Repair the repository and keep the tests passing."},
+        {"role": "assistant", "content": "1. Inspect the failing test\n2. Apply the smallest fix"},
+        {"role": "tool", "name": "terminal", "content": "pytest failed in /workspace/project/tests/test_app.py"},
+    ]
+    store.observe_messages(raw_messages)
+    api_messages = [
+        {"role": "system", "content": "Hermes"},
+        {"role": "user", "content": "An earlier unrelated request.", "_hermes_source_index": 0},
+        {"role": "assistant", "content": "That earlier request is complete.", "_hermes_source_index": 1},
+        {"role": "user", "content": "Repair the repository and keep the tests passing.", "_hermes_source_index": 2, "_hermes_current_turn": True},
+        {"role": "assistant", "content": "1. Inspect the failing test\n2. Apply the smallest fix", "_hermes_source_index": 3},
+        {"role": "tool", "name": "terminal", "content": "pytest failed in /workspace/project/tests/test_app.py", "_hermes_source_index": 4},
+    ]
+
+    projected = store.prepare_api_messages(
+        api_messages,
+        raw_messages,
+        current_turn_user_idx=2,
+    )
+
+    assert len(projected) == 4  # system + active user turn and its two follow-ups
+    assert not any("earlier unrelated" in str(item) for item in projected)
+    assert "<hermes-continuous-state schema_version=1>" in projected[1]["content"]
+    assert store.state.current_plan == ["Inspect the failing test", "Apply the smallest fix"]
+    assert store.state.failures_and_retries
+    assert (tmp_path / "state.json").exists()
+
+    resumed = ContinuousStateStore(state_id="session-1", path=tmp_path / "state.json")
+    assert resumed.state.objective == "Repair the repository and keep the tests passing."
+    assert resumed.state.checkpoint_count >= 1
+
+
+def test_trajectory_compaction_deduplicates_redundant_observations(tmp_path):
+    agent = SimpleNamespace(_reasoning_native_tier=2, _reasoning_metrics=None)
+    store = ContinuousStateStore(state_id="session-2", path=tmp_path / "state.json")
+    store._agent = agent
+    store.begin_turn("Investigate the service failure.")
+    messages = [{"role": "user", "content": "Investigate the service failure."}]
+    for index in range(28):
+        messages.append({"role": "assistant", "content": f"step {index}"})
+        messages.append({"role": "tool", "name": "terminal", "content": "same output"})
+    store.observe_messages(messages)
+
+    assert store.maybe_compact(raw_messages=messages, reason="test_pressure") is True
+    assert store.state.compaction_count == 1
+    assert len(store.state.tool_observations) == 1
+    assert store.state.compacted_trajectory[-1]["reason"] == "test_pressure"
+
+
+def test_native_tier_keeps_provider_items_instead_of_generic_projection():
+    agent = SimpleNamespace(
+        _reasoning_native_tier=3,
+        _reasoning_metrics=None,
+        api_mode="codex_responses",
+        provider="openai",
+        _codex_reasoning_replay_enabled=True,
+    )
+    store = ContinuousStateStore(state_id="session-3")
+    store._agent = agent
+    store.begin_turn("Continue the task.")
+    api_messages = [
+        {"role": "system", "content": "Hermes"},
+        {"role": "user", "content": "old turn", "_hermes_source_index": 0},
+        {"role": "assistant", "content": "old reasoning", "_hermes_source_index": 1},
+        {"role": "user", "content": "Continue the task.", "_hermes_current_turn": True},
+    ]
+
+    result = store.prepare_api_messages(api_messages, [
+        {"role": "user", "content": "old turn"},
+        {"role": "assistant", "content": "old reasoning"},
+        {"role": "user", "content": "Continue the task."},
+    ])
+
+    assert len(result) == 4
+    assert not any("hermes-continuous-state" in str(item) for item in result)
+    assert all("_hermes_source_index" not in item for item in result)
