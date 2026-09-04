@@ -128,6 +128,11 @@ def main() -> int:
     parser.add_argument("--toolsets", help="Toolsets passed to both Hermes runs")
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument(
+        "--backends", nargs="+", choices=("legacy", "arc_continuous"),
+        default=("legacy", "arc_continuous"),
+        help="Backends to run (defaults to the complete A/B pair)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Write the comparison JSON here (default: stdout)",
@@ -164,13 +169,31 @@ def main() -> int:
 
     records = []
     with tempfile.TemporaryDirectory(prefix="hermes-reasoning-ab-") as temp_dir:
-        for backend in ("legacy", "arc_continuous"):
+        for backend in args.backends:
             usage_path = Path(temp_dir) / f"{backend}.json"
+            # The sandbox used for repeatable runs may make the real
+            # ~/.hermes read-only. Copy only user configuration/credentials
+            # into an isolated temporary Hermes home; logs, sessions and
+            # auxiliary continuous state then cannot leak between runs.
+            benchmark_home = Path(temp_dir) / f"hermes-home-{backend}"
+            benchmark_home.mkdir(parents=True, exist_ok=True)
+            source_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+            for home_file in ("config.yaml", ".env"):
+                source_file = source_home / home_file
+                if source_file.exists():
+                    shutil.copy2(source_file, benchmark_home / home_file)
             if fixture is not None:
                 run_workdir = Path(temp_dir) / backend / fixture.name
                 shutil.copytree(fixture, run_workdir)
             else:
                 run_workdir = args.workdir.expanduser().resolve() if args.workdir else root
+            config_path = benchmark_home / "config.yaml"
+            if config_path.exists():
+                config_text = config_path.read_text(encoding="utf-8")
+                config_text = config_text.replace(
+                    "  cwd: ~/", f"  cwd: {run_workdir}", 1
+                )
+                config_path.write_text(config_text, encoding="utf-8")
             command = [
                 sys.executable,
                 "-m",
@@ -189,6 +212,7 @@ def main() -> int:
             if args.toolsets:
                 command.extend(["--toolsets", args.toolsets])
             env = os.environ.copy()
+            env["HERMES_HOME"] = str(benchmark_home)
             existing_pythonpath = env.get("PYTHONPATH")
             env["PYTHONPATH"] = (
                 str(root)
