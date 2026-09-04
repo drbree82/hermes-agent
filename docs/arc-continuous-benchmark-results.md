@@ -114,3 +114,65 @@ can be rerun with a live llama.cpp/vLLM/SGLang endpoint.
 The runner copies each fixture and an isolated Hermes home for each backend
 run, validates coding/sysadmin/artifact outputs mechanically, and preserves
 backend-specific telemetry in each JSON result.
+
+## Context-pressure follow-up
+
+Date: 2026-09-04
+Task: `long_context_distributed_evidence`
+Fixture: 50 evidence files, approximately 2.4 KB each, with required facts at
+the beginning, middle, and end
+Model/provider: the same Inkling/OpenRouter route
+Repetitions: 5 per strategy
+
+The first version of this fixture did not create enough pressure: the model
+often completed it in 6–11 calls, so adaptive mode stayed `collecting` and no
+compaction occurred. That calibration run is retained in
+`reasoning_benchmark_results/long-context-adaptive-20260904/`. The enlarged
+fixture and a threshold of 16 messages produced the intended activation and
+compaction path. The threshold is a fixture setting; the normal default stays
+28 messages.
+
+| Strategy | Success | Median total tokens | Median calls | Median time | Median capsule | Median omitted | Median net savings | Median compactions | Activation |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| legacy control (adaptive batch) | 5/5 | 190,089 | 13 | 22.2s | 0 | 0 | 0 | 0 | none |
+| arc_continuous adaptive | 5/5 | 163,553 | 11 | 20.7s | 1,198 | 16,269 | **+10,460** | 3 | tool_output_pressure |
+| legacy control (forced batch) | 5/5 | 116,609 | 8 | 14.1s | 0 | 0 | 0 | 0 | none |
+| arc_continuous forced/eager | 5/5 | 146,856 | 8 | 20.0s | 1,198 | 1,248 | **-7,013** | 1 | configured_always |
+
+The controls are stochastic batches, so the adaptive and forced legacy rows
+are not identical random samples. Within the five adaptive pairs, ARC token
+deltas were `[+127,320, -96,516, +25,172, -48,457, -26,536]`; the median
+paired delta was `-26,536` tokens. Within the forced pairs the median paired
+delta was `+31,770` tokens. Both strategies retained the required facts and
+passed the validator in every repetition.
+
+This is evidence for an activation crossover, not a universal win:
+
+* Below pressure, the earlier short-task suite showed that eager projection
+  adds context without improving success.
+* Under this fixture’s pressure, adaptive projection activated once and then
+  compacted the trajectory three times at the median. It omitted 16,269
+  estimated legacy-transcript tokens and added a 1,198-token capsule, yielding
+  positive median net savings and lower median calls/time than its control.
+* Forced/eager projection activated immediately, usually omitted almost no
+  legacy history, and had negative median net savings. This isolates eager
+  activation as a real cost.
+* Success was 5/5 for all three measured strategies. The improvement was
+  efficiency/context handling, not task correctness.
+* The adaptive paired deltas varied widely, including one +127k-token run and
+  one run with only +511 net savings in the earlier calibration. More tasks
+  and context sizes are needed to estimate a stable crossover point.
+
+The practical current policy is therefore: keep `legacy` behavior while a
+generic task is healthy and below pressure; let `arc_continuous` collect state
+without changing the request; activate it only on pressure, resume, or an
+explicit experiment; and compact old active-turn pairs only after activation.
+
+The raw v2/v3 traces are committed under:
+
+* `reasoning_benchmark_results/long-context-adaptive-v2-20260904/` — fixture
+  calibration with compaction threshold 16;
+* `reasoning_benchmark_results/long-context-adaptive-v3-20260904/` — final
+  adaptive comparison;
+* `reasoning_benchmark_results/long-context-forced-v2-20260904/` — final eager
+  comparison.
