@@ -23,6 +23,8 @@ def main() -> int:
     parser.add_argument("--provider")
     parser.add_argument("--toolsets")
     parser.add_argument("--timeout", type=float)
+    parser.add_argument("--max-turns", type=int)
+    parser.add_argument("--run-budget", type=float)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--continuity-mode", choices=("adaptive", "always"))
     parser.add_argument("--trajectory-message-threshold", type=int)
@@ -71,6 +73,10 @@ def main() -> int:
                 command.extend(["--toolsets", args.toolsets])
             if args.timeout is not None:
                 command.extend(["--timeout", str(args.timeout)])
+            if args.max_turns is not None:
+                command.extend(["--max-turns", str(args.max_turns)])
+            if args.run_budget is not None:
+                command.extend(["--run-budget", str(args.run_budget)])
             if args.continuity_mode:
                 command.extend(["--continuity-mode", args.continuity_mode])
             if args.trajectory_message_threshold is not None:

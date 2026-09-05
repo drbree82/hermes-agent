@@ -110,19 +110,13 @@ Astra is recognized as a current/future Responses model family for capability
 resolution, while route/model gates remain conservative when access is
 unavailable.
 
-`previous_response_id` is deliberately not enabled in this phase. The current
-Hermes Responses transport sends `store=false`, supports Codex/ChatGPT, xAI,
-GitHub and compatible relays through one converter, and has retries,
-cross-provider switching, approvals and safe-boundary steering that all depend
-on Hermes retaining the canonical transcript. OpenAI documents
-`previous_response_id` as a multi-turn state handle, but it cannot be combined
-with `conversation`, and a safe implementation here would require a distinct
-direct-OpenAI `store=true` delta protocol for function-call outputs and retry
-rollback. Adding the field to the existing reconstructed request would either
-duplicate input or silently fork provider state. Native encrypted reasoning
-replay plus native compaction is the current Tier 3 path; a future direct
-OpenAI adapter can add the response-id protocol behind a capability and an
-explicit privacy/configuration gate.
+The existing Codex/Responses replay path remains the default Tier 3-compatible
+path for relays and stateless deployments. Direct OpenAI Responses routes can
+opt into the separate experimental `openai_native_continuous` backend, which
+uses `store=true`, `previous_response_id`, and new tool-result input while
+retaining Hermes' canonical transcript for rollback and fallback. The exact
+capability boundary and current Astra semantics are documented in
+[`docs/astra-native-continuation.md`](astra-native-continuation.md).
 
 This is an exact compatibility boundary, not a claim that encrypted replay is
 identical to server-side response continuation. Mid-turn WebSocket steering is

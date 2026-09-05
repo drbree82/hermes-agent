@@ -839,6 +839,37 @@ def _chat_messages_to_responses_input(
     return prune_pre_checkpoint_items(items, item_sources=item_sources)
 
 
+def _native_continuation_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return only the input delta after the last stored Responses output.
+
+    With ``previous_response_id`` OpenAI owns the prior response trajectory.
+    Re-sending Hermes' complete transcript would defeat the provider-native
+    continuation contract and needlessly invalidate cached context.  The
+    Hermes transcript still remains canonical; this helper only narrows the
+    request-local wire projection to the new user message or local tool
+    outputs that follow the last assistant response.
+    """
+    if not isinstance(messages, list):
+        return []
+    last_assistant = None
+    for index, message in enumerate(messages):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            last_assistant = index
+    if last_assistant is not None:
+        delta = messages[last_assistant + 1 :]
+        if delta:
+            return delta
+    # A response handle can survive a restart even when the restored
+    # transcript has no assistant carrier.  The newest user input is the only
+    # safe fallback; never synthesize a prior assistant/tool sequence here.
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return [message]
+    return []
+
+
 class ResponsesRouteFlags(NamedTuple):
     """Which special Responses-API route an agent is talking to.
 
@@ -1305,11 +1336,12 @@ def _preflight_codex_api_kwargs(
         normalized_tools = _neutralize_harmony_structure(normalized_tools)
 
     store = api_kwargs.get("store", False)
-    if store is not False:
-        raise ValueError("Codex Responses contract requires 'store' to be false.")
+    if not isinstance(store, bool):
+        raise ValueError("Codex Responses 'store' must be boolean.")
 
     allowed_keys = {
         "model", "instructions", "input", "tools", "store",
+        "previous_response_id",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key",
         "prompt_cache_retention", "service_tier", "context_management",
@@ -1319,8 +1351,11 @@ def _preflight_codex_api_kwargs(
         "model": model,
         "instructions": instructions,
         "input": normalized_input,
-        "store": False,
+        "store": bool(api_kwargs.get("store", False)),
     }
+    previous_response_id = api_kwargs.get("previous_response_id")
+    if isinstance(previous_response_id, str) and previous_response_id.strip():
+        normalized["previous_response_id"] = previous_response_id.strip()
     if normalized_tools is not None:
         normalized["tools"] = normalized_tools
 

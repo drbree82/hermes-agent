@@ -26,6 +26,7 @@ def _output_item_type(item: Any) -> str:
 
 BACKEND_LEGACY = "legacy"
 BACKEND_ARC_CONTINUOUS = "arc_continuous"
+BACKEND_OPENAI_NATIVE_CONTINUOUS = "openai_native_continuous"
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class ProviderCapabilities:
     """Capabilities resolved from the active provider transport."""
 
     native_conversation_continuation: bool = False
+    native_response_continuation: bool = False
     persistent_reasoning_state: bool = False
     provider_side_compaction: bool = False
     local_compaction: bool = False
@@ -47,6 +49,7 @@ class ProviderCapabilities:
     def to_dict(self) -> Dict[str, bool]:
         return {
             "native_conversation_continuation": self.native_conversation_continuation,
+            "native_response_continuation": self.native_response_continuation,
             "persistent_reasoning_state": self.persistent_reasoning_state,
             "provider_side_compaction": self.provider_side_compaction,
             "local_compaction": self.local_compaction,
@@ -81,6 +84,13 @@ def resolve_provider_capabilities(agent: Any) -> ProviderCapabilities:
         or ("chatgpt.com" in base_url and "/backend-api/codex" in base_url)
     )
     openai_native_responses = responses and direct_openai
+    # previous_response_id is an OpenAI API Responses contract. The ChatGPT
+    # Codex relay shares the wire family but is not treated as equivalent
+    # without an explicit adapter capability.
+    openai_api_native_continuation = openai_native_responses and (
+        provider in {"openai", "openai-api"}
+        or "api.openai.com" in base_url
+    )
     runtime_caps = getattr(agent, "runtime_capabilities", {}) or {}
     native_replay = bool(
         openai_native_responses
@@ -90,6 +100,7 @@ def resolve_provider_capabilities(agent: Any) -> ProviderCapabilities:
     session_db = getattr(agent, "_session_db", None)
     return ProviderCapabilities(
         native_conversation_continuation=openai_native_responses,
+        native_response_continuation=openai_api_native_continuation,
         persistent_reasoning_state=native_replay,
         provider_side_compaction=bool(runtime_caps.get("native_compaction")),
         local_compaction=bool(getattr(agent, "compression_enabled", False)),
@@ -99,9 +110,7 @@ def resolve_provider_capabilities(agent: Any) -> ProviderCapabilities:
         mid_turn_steering=bool(getattr(agent, "native_mid_turn_steering", False)),
         tool_call_continuation=responses or getattr(agent, "api_mode", "")
         in {"chat_completions", "anthropic_messages", "bedrock_converse"},
-        resumable_response_state=bool(
-            responses and getattr(agent, "native_response_state_handle", False)
-        ),
+        resumable_response_state=openai_api_native_continuation,
         resumable_sessions=bool(session_db and getattr(agent, "session_id", None)),
         substrate_managed_continuity=True,
         native_encrypted_reasoning_replay=native_replay,
@@ -136,6 +145,9 @@ class ReasoningMetrics:
     checkpoint_events: int = 0
     native_state_reuses: int = 0
     native_state_mode: str = "none"
+    native_response_ids: list[str] = field(default_factory=list)
+    native_continuation_requests: int = 0
+    native_continuation_fallbacks: int = 0
     estimated_cost_usd: Optional[float] = None
     continuous_state_bytes: int = 0
     capsule_chars: int = 0
@@ -260,6 +272,9 @@ class ReasoningMetrics:
             "checkpoint_events": self.checkpoint_events,
             "native_state_reuses": self.native_state_reuses,
             "native_state_mode": self.native_state_mode,
+            "native_response_ids": list(self.native_response_ids),
+            "native_continuation_requests": self.native_continuation_requests,
+            "native_continuation_fallbacks": self.native_continuation_fallbacks,
             "estimated_cost_usd": self.estimated_cost_usd,
             "continuous_state_bytes": self.continuous_state_bytes,
             "capsule_chars": self.capsule_chars,
@@ -381,6 +396,12 @@ class ReasoningBackend:
                     and metrics.model_calls > 1
                 ):
                     metrics.native_state_reuses += 1
+                response_id = getattr(response, "id", None)
+                if isinstance(response_id, str) and response_id.strip():
+                    if response_id not in metrics.native_response_ids:
+                        metrics.native_response_ids.append(response_id)
+                    if getattr(agent, "_openai_native_continuation_enabled", False):
+                        agent._openai_native_previous_response_id = response_id
                 return response
 
             setattr(agent, name, observed)
@@ -483,9 +504,50 @@ class ArcContinuousReasoningBackend(ReasoningBackend):
             agent._reasoning_native_tier = 0
 
 
+class OpenAINativeContinuousReasoningBackend(ArcContinuousReasoningBackend):
+    """Tier-3 OpenAI Responses continuation over the existing Hermes loop.
+
+    The continuous state manager remains available for checkpoints and
+    diagnostics, but direct OpenAI API requests carry the provider response
+    handle and send only new user/tool-result input after it. Unsupported
+    Responses relays retain Hermes' existing encrypted-replay behavior.
+    """
+
+    name = BACKEND_OPENAI_NATIVE_CONTINUOUS
+
+    def run(self, agent: Any, runner: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        capabilities = resolve_provider_capabilities(agent)
+        route = (
+            getattr(agent, "provider", None),
+            getattr(agent, "base_url", None),
+            getattr(agent, "model", None),
+        )
+        previous_route = getattr(agent, "_openai_native_response_route", None)
+        if previous_route is not None and previous_route != route:
+            # A response handle is scoped to its provider/model conversation.
+            agent._openai_native_previous_response_id = None
+        agent._openai_native_response_route = route
+        agent._openai_native_continuation_enabled = bool(
+            capabilities.native_response_continuation
+        )
+        result = super().run(agent, runner, *args, **kwargs)
+        if isinstance(result, dict):
+            result["reasoning_continuity"] = (
+                "provider_native_fallback"
+                if getattr(agent, "_openai_native_continuation_fallback_requested", False)
+                else (
+                    "provider_native"
+                    if capabilities.native_response_continuation
+                    else "provider_native_replay_fallback"
+                )
+            )
+        return result
+
+
 _BACKENDS = {
     BACKEND_LEGACY: LegacyReasoningBackend(),
     BACKEND_ARC_CONTINUOUS: ArcContinuousReasoningBackend(),
+    BACKEND_OPENAI_NATIVE_CONTINUOUS: OpenAINativeContinuousReasoningBackend(),
 }
 
 

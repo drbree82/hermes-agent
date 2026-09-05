@@ -561,6 +561,22 @@ class ResponsesApiTransport(ProviderTransport):
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
+        previous_response_id = params.get("previous_response_id")
+        native_mode = bool(params.get("native_continuation"))
+        native_continuation = bool(native_mode and previous_response_id)
+        if native_continuation:
+            # The provider already has the preceding response and its opaque
+            # reasoning state.  Only send the new user/tool-result delta;
+            # Hermes keeps the complete transcript separately for sessions,
+            # approvals, recovery and cross-provider fallback.
+            from agent.codex_responses_adapter import _native_continuation_messages
+
+            payload_messages = _native_continuation_messages(payload_messages)
+            # Native continuation must not mix provider-owned state with a
+            # client replay of the same reasoning items.  The encrypted
+            # items remain persisted for rollback/fallback, but are omitted
+            # from this request's input.
+            replay_encrypted_reasoning = False
         if replay_encrypted_reasoning and _is_azure_foundry_responses(params):
             # Microsoft Foundry accepts the initial Responses function-call
             # request and ordinary (non-tool) multi-turn continuity, but
@@ -740,8 +756,13 @@ class ResponsesApiTransport(ProviderTransport):
                 current_issuer_kind=issuer_kind,
                 native_compaction_eligible=native_compaction_active,
             ),
-            "store": False,
+            # previous_response_id is a server-side continuation handle, so
+            # this path must retain the response.  The legacy/replay path
+            # deliberately remains store=False.
+            "store": native_mode,
         }
+        if native_continuation:
+            kwargs["previous_response_id"] = str(previous_response_id)
         if response_tools:
             kwargs["tools"] = response_tools
             kwargs["tool_choice"] = "auto"
@@ -973,6 +994,12 @@ class ResponsesApiTransport(ProviderTransport):
 
         # Extract reasoning items for provider_data
         provider_data = {}
+        response_id = getattr(response, "id", None)
+        if isinstance(response_id, str) and response_id.strip():
+            # The native OpenAI continuation backend consumes this opaque
+            # handle on the next tool/user delta. It is not reasoning content
+            # and is safe to persist as provider session metadata.
+            provider_data["response_id"] = response_id.strip()
         if msg and hasattr(msg, "codex_reasoning_items") and msg.codex_reasoning_items:
             provider_data["codex_reasoning_items"] = msg.codex_reasoning_items
         if msg and hasattr(msg, "codex_message_items") and msg.codex_message_items:

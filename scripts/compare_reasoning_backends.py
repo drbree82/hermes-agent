@@ -247,7 +247,15 @@ def main() -> int:
     parser.add_argument("--toolsets", help="Toolsets passed to both Hermes runs")
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument(
-        "--backends", nargs="+", choices=("legacy", "arc_continuous"),
+        "--max-turns", type=int, default=None,
+        help="Bound tool-calling iterations for each isolated benchmark run",
+    )
+    parser.add_argument(
+        "--run-budget", type=float, default=None,
+        help="Bound wall-clock seconds for each Hermes conversation",
+    )
+    parser.add_argument(
+        "--backends", nargs="+", choices=("legacy", "arc_continuous", "openai_native_continuous"),
         default=("legacy", "arc_continuous"),
         help="Backends to run (defaults to the complete A/B pair)",
     )
@@ -296,7 +304,13 @@ def main() -> int:
         parser.error("--workdir and --fixture are mutually exclusive")
 
     records = []
-    with tempfile.TemporaryDirectory(prefix="hermes-reasoning-ab-") as temp_dir:
+    # Keep the child cwd under the checkout.  Hermes' local terminal backend
+    # intentionally derives its cwd from the process cwd; some sandbox
+    # launchers remap cwd values outside the workspace, which would make a
+    # supposedly isolated fixture appear as the host directory to the agent.
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-reasoning-ab-", dir=root
+    ) as temp_dir:
         for backend in args.backends:
             usage_path = Path(temp_dir) / f"{backend}.json"
             # The sandbox used for repeatable runs may make the real
@@ -306,7 +320,13 @@ def main() -> int:
             benchmark_home = Path(temp_dir) / f"hermes-home-{backend}"
             benchmark_home.mkdir(parents=True, exist_ok=True)
             source_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
-            for home_file in ("config.yaml", ".env"):
+            # OAuth-backed providers (including OpenAI Codex/Astra) keep
+            # refresh/access credentials in auth.json rather than .env.
+            # Copy the credential store into the isolated home so a benchmark
+            # run exercises the configured provider instead of failing before
+            # the first model call.  The file remains in the temporary home
+            # and is never included in the result JSON.
+            for home_file in ("config.yaml", ".env", "auth.json"):
                 source_file = source_home / home_file
                 if source_file.exists():
                     shutil.copy2(source_file, benchmark_home / home_file)
@@ -355,6 +375,20 @@ def main() -> int:
                         f"  trajectory_compaction_min_new_tool_chars: 12000\n"
                         "  active_turn_tail_messages: 8\n"
                     )
+                if args.max_turns is not None:
+                    config_text = re.sub(
+                        r"(?m)^  max_turns:.*$",
+                        f"  max_turns: {int(args.max_turns)}",
+                        config_text,
+                        count=1,
+                    )
+                if args.run_budget is not None:
+                    config_text = re.sub(
+                        r"(?m)^  run_budget_seconds:.*$",
+                        f"  run_budget_seconds: {float(args.run_budget)}",
+                        config_text,
+                        count=1,
+                    )
                 config_path.write_text(config_text, encoding="utf-8")
             command = [
                 sys.executable,
@@ -362,6 +396,11 @@ def main() -> int:
                 "hermes_cli.main",
                 "-z",
                 prompt,
+                # Benchmark fixtures are disposable copies.  Auto-approve
+                # their tool actions so a non-interactive process cannot stop
+                # at an approval prompt and be mistaken for a provider
+                # failure.
+                "--yolo",
                 "--reasoning-backend",
                 backend,
                 "--usage-file",
@@ -414,6 +453,21 @@ def main() -> int:
                     "workspace": str(run_workdir),
                 }
             )
+            # Persist after each backend so a capped/aborted paid run still
+            # leaves the completed comparison leg available for analysis.
+            if args.output:
+                partial_report = {
+                    "task_id": task_id,
+                    "prompt": prompt,
+                    "fixture": str(fixture) if fixture else None,
+                    "runs": records,
+                    "partial": len(records) < len(args.backends),
+                }
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(
+                    json.dumps(partial_report, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
 
     report = {
         "task_id": task_id,

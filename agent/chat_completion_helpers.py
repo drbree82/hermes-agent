@@ -2094,6 +2094,39 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
             is_github_responses=is_github_responses,
         )
 
+        # Tier 3 OpenAI continuation is opt-in at the reasoning-backend
+        # boundary.  Recover the last handle from the live agent first, then
+        # from the persisted Codex sidecar after a Hermes restart.
+        _native_continuation = bool(
+            getattr(agent, "_openai_native_continuation_enabled", False)
+            and getattr(agent, "reasoning_backend", "")
+            == "openai_native_continuous"
+        )
+        _previous_response_id = getattr(
+            agent, "_openai_native_previous_response_id", None
+        )
+        if _native_continuation and not _previous_response_id:
+            for _message in reversed(_msgs_for_codex):
+                if not isinstance(_message, dict) or _message.get("role") != "assistant":
+                    continue
+                _previous_response_id = _message.get("openai_response_id")
+                if not _previous_response_id:
+                    for _item in _message.get("codex_message_items") or []:
+                        if (
+                            isinstance(_item, dict)
+                            and _item.get("type") == "hermes_response_handle"
+                            and isinstance(_item.get("response_id"), str)
+                        ):
+                            _previous_response_id = _item["response_id"]
+                            break
+                if _previous_response_id:
+                    agent._openai_native_previous_response_id = _previous_response_id
+                    break
+        if _native_continuation and _previous_response_id:
+            _native_metrics = getattr(agent, "_reasoning_metrics", None)
+            if _native_metrics is not None:
+                _native_metrics.native_continuation_requests += 1
+
         # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
         # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
         # Most commonly hit when MCP-derived tools carry JSON Schema validation
@@ -2146,6 +2179,8 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
             ),
             context_management=_context_management,
+            native_continuation=_native_continuation,
+            previous_response_id=_previous_response_id,
         )
 
     # ── chat_completions (default) ─────────────────────────────────────
@@ -2535,6 +2570,33 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     codex_message_items = getattr(assistant_message, "codex_message_items", None)
     if codex_message_items:
         msg["codex_message_items"] = codex_message_items
+
+    # OpenAI Responses native continuation handle.  This is deliberately
+    # separate from encrypted reasoning replay: a resumed Hermes session can
+    # use the response id when the provider retained the response, while the
+    # existing encrypted items remain available for explicit fallback.
+    response_id = getattr(assistant_message, "response_id", None)
+    if isinstance(response_id, str) and response_id.strip():
+        msg["openai_response_id"] = response_id.strip()
+        # Keep a compact, provider-agnostic persistence carrier inside the
+        # existing Codex message-item sidecar.  Hermes' session schema already
+        # persists that sidecar; the Responses adapter ignores this metadata
+        # item on replay, while the native backend can recover the handle after
+        # a process restart without adding a new DB column.
+        persisted_items = msg.get("codex_message_items")
+        if not isinstance(persisted_items, list):
+            persisted_items = []
+        persisted_items = [
+            item for item in persisted_items
+            if not (
+                isinstance(item, dict)
+                and item.get("type") == "hermes_response_handle"
+            )
+        ]
+        persisted_items.append(
+            {"type": "hermes_response_handle", "response_id": response_id.strip()}
+        )
+        msg["codex_message_items"] = persisted_items
 
     if assistant_tool_calls:
         tool_calls = []

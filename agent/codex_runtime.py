@@ -1617,6 +1617,40 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # passes and behavior is unchanged.
     request_token = getattr(agent, "_active_codex_stream_request_token", None)
 
+    def _disable_invalid_native_handle(exc: BaseException) -> bool:
+        """Invalidate a rejected response handle before Hermes retries.
+
+        A stored Responses handle can expire, be deleted, or belong to a
+        different API key.  The canonical Hermes transcript and encrypted
+        items are still available, so the next rebuilt request must use the
+        existing replay path instead of retrying the same bad handle.
+        """
+        if not api_kwargs.get("previous_response_id"):
+            return False
+        text = str(exc).lower()
+        markers = (
+            "previous_response_id",
+            "response id",
+            "response not found",
+            "invalid response",
+            "does not exist",
+            "not found",
+        )
+        if not any(marker in text for marker in markers):
+            return False
+        agent._openai_native_continuation_enabled = False
+        agent._openai_native_previous_response_id = None
+        agent._openai_native_continuation_fallback_requested = True
+        metrics = getattr(agent, "_reasoning_metrics", None)
+        if metrics is not None:
+            metrics.native_continuation_fallbacks += 1
+        logger.warning(
+            "OpenAI native response continuation was rejected; clearing the "
+            "opaque handle and rebuilding from Hermes transcript state. %s",
+            agent._client_log_context(),
+        )
+        return True
+
     def _request_is_current() -> bool:
         if request_token is None:
             return True
@@ -1742,6 +1776,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 stream_opened=writer_token["value"] is not None,
             )
             raise
+        except Exception as exc:
+            _disable_invalid_native_handle(exc)
+            raise
 
         def _interrupt_or_superseded() -> bool:
             # A retired request must NOT break out of the consume loop: breaking
@@ -1798,6 +1835,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     exc,
                     stream_opened=writer_token["value"] is not None,
                 )
+                raise
+            except Exception as exc:
+                _disable_invalid_native_handle(exc)
                 raise
 
             # A terminal response has already been assembled at this point

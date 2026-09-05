@@ -215,7 +215,10 @@ def build_top_level_parser():
         "--reasoning-backend",
         default=None,
         metavar="BACKEND",
-        help="Reasoning substrate: legacy or arc_continuous (default: config.yaml).",
+        help=(
+            "Reasoning substrate: legacy, arc_continuous, or "
+            "openai_native_continuous (default: config.yaml)."
+        ),
     )
     parser.add_argument(
         "-t",
@@ -431,7 +434,10 @@ def build_top_level_parser():
         "--reasoning-backend",
         default=argparse.SUPPRESS,
         metavar="BACKEND",
-        help="Reasoning substrate: legacy or arc_continuous.",
+            help=(
+                "Reasoning substrate: legacy, arc_continuous, or "
+                "openai_native_continuous."
+            ),
     )
     _inherited_flag(
         chat_parser,

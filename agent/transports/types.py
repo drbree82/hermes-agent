@@ -97,7 +97,8 @@ class NormalizedResponse:
     Response-level ``provider_data`` examples:
 
     * Anthropic: ``{"reasoning_details": [...]}``
-    * Codex: ``{"codex_reasoning_items": [...], "codex_message_items": [...]}``
+    * Codex: ``{"codex_reasoning_items": [...], "codex_message_items": [...],
+      "response_id": "resp_..."}``
     * Others: ``None``
     """
 
@@ -148,6 +149,12 @@ class NormalizedResponse:
     def codex_message_items(self):
         pd = self.provider_data or {}
         return pd.get("codex_message_items")
+
+    @property
+    def response_id(self):
+        """Provider response handle, when the transport exposes one."""
+        pd = self.provider_data or {}
+        return pd.get("response_id")
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import pytest
 
 from agent.reasoning_backend import (
     ArcContinuousReasoningBackend,
+    BACKEND_OPENAI_NATIVE_CONTINUOUS,
     ProviderCapabilities,
     get_reasoning_backend,
     resolve_provider_capabilities,
@@ -91,6 +92,121 @@ def test_responses_capabilities_reflect_native_replay_and_compaction():
     assert caps.persistent_reasoning_state is True
     assert caps.provider_side_compaction is True
     assert caps.tool_call_continuation is True
+
+
+def test_openai_api_exposes_distinct_native_response_continuation_capability():
+    agent = SimpleNamespace(
+        api_mode="codex_responses",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        runtime_capabilities={"native_compaction": True},
+        compression_enabled=True,
+        reasoning_config={"effort": "high"},
+        native_mid_turn_steering=False,
+        _codex_reasoning_replay_enabled=True,
+        _session_db=None,
+        session_id="session",
+    )
+
+    caps = resolve_provider_capabilities(agent)
+
+    assert caps.native_response_continuation is True
+    assert caps.resumable_response_state is True
+
+
+def test_chatgpt_codex_replay_is_not_mislabeled_as_previous_response_continuation():
+    agent = SimpleNamespace(
+        api_mode="codex_responses",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        runtime_capabilities={"native_compaction": True},
+        compression_enabled=True,
+        reasoning_config={"effort": "high"},
+        native_mid_turn_steering=False,
+        _codex_reasoning_replay_enabled=True,
+        _session_db=None,
+        session_id="session",
+    )
+
+    caps = resolve_provider_capabilities(agent)
+
+    assert caps.persistent_reasoning_state is True
+    assert caps.native_response_continuation is False
+    assert caps.resumable_response_state is False
+
+
+def test_native_continuation_uses_only_post_response_delta():
+    from agent.codex_responses_adapter import _native_continuation_messages
+
+    messages = [
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": "calling a tool", "tool_calls": [{"id": "fc_1"}]},
+        {"role": "tool", "tool_call_id": "fc_1", "content": "tool result"},
+    ]
+
+    assert _native_continuation_messages(messages) == [messages[-1]]
+
+
+def test_openai_transport_builds_server_continuation_request():
+    from agent.transports.codex import ResponsesApiTransport
+
+    transport = ResponsesApiTransport()
+    messages = [
+        {"role": "system", "content": "stable Hermes instructions"},
+        {"role": "user", "content": "inspect the repository"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "fc_1", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "fc_1", "content": "tests failed"},
+    ]
+
+    kwargs = transport.build_kwargs(
+        "gpt-6-astra",
+        messages,
+        tools=[],
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        reasoning_config={"effort": "high"},
+        native_continuation=True,
+        previous_response_id="resp_previous",
+        replay_encrypted_reasoning=True,
+        session_id="session",
+    )
+
+    assert kwargs["store"] is True
+    assert kwargs["previous_response_id"] == "resp_previous"
+    assert kwargs["instructions"] == "stable Hermes instructions"
+    assert len(kwargs["input"]) == 1
+    assert kwargs["input"][0]["type"] == "function_call_output"
+    assert kwargs["input"][0]["call_id"].startswith("call_")
+    assert kwargs["input"][0]["output"] == "tests failed"
+
+
+def test_openai_transport_first_native_request_stores_without_a_handle():
+    from agent.transports.codex import ResponsesApiTransport
+
+    kwargs = ResponsesApiTransport().build_kwargs(
+        "gpt-6-astra",
+        [{"role": "system", "content": "stable"}, {"role": "user", "content": "hello"}],
+        tools=[],
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        reasoning_config={"effort": "high"},
+        native_continuation=True,
+        previous_response_id=None,
+        session_id="session",
+    )
+
+    assert kwargs["store"] is True
+    assert "previous_response_id" not in kwargs
+    assert kwargs["input"]
+
+
+def test_native_backend_is_registered_separately():
+    backend = get_reasoning_backend(BACKEND_OPENAI_NATIVE_CONTINUOUS)
+    assert backend.name == BACKEND_OPENAI_NATIVE_CONTINUOUS
 
 
 def test_responses_compatible_relay_does_not_inherit_openai_native_claims():
